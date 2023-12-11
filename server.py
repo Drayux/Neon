@@ -1,6 +1,7 @@
 # https://docs.python.org/3/library/http.server.html
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from enum import Enum
+from json import dumps, loads
 from os import getcwd
 from pathlib import Path
 from threading import Thread
@@ -33,7 +34,7 @@ UIElements = {
 		"Default" : str(scriptDir),
 		"Tooltip" : "Specify the root directory inside which the server will honor requests."	\
 				+ "\n'http://localhost' will respond with the file '<root dir>/index.html'"		\
-				+ "\nSelection must be a valid directory with read permissions."
+				+ "\nMust be a valid directory with read permissions."
 	},
 
 	Property.PORT : {
@@ -300,7 +301,7 @@ class ScriptManager:
 		# Create the server
 		# TODO If client secret is necessary, be sure to add it as a server data
 		self.alertServer = AlertServer(
-			("localhost", self.serverSettings[Property.PORT]), 
+			("127.0.0.1", self.serverSettings[Property.PORT]), 
 			RequestHandler, 
 			self.serverSettings[Property.DIR], 
 			self.serverSettings[Property.APIID])
@@ -345,31 +346,60 @@ class AlertServer(HTTPServer):
 # TODO Deny all requests except those from localhost
 class RequestHandler(SimpleHTTPRequestHandler):
 	# Override server logging
-	def log_message(self, format, *args):
-		# TODO Consider actually logging requests (need to figure out how to give the script a name for the sake of OBS)
-		# obs.script_log(obs.LOG_INFO, "%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), format%args))
-		pass
+	# TODO Consider actually logging requests (need to figure out how to give the script a name for the sake of OBS)
+	def log_message(self, format, *args): pass
+	#	obs.script_log(obs.LOG_INFO, "%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), format%args))
 
-	# POST -> If connection is verified, update the authentication information
-	#  ^^(allows for configuration via browser other than OBS)
-	def do_POST(self): 
-		print("this is a POST request")
+	# POST -> Allow pages to send commands to the script
+	def do_POST(self):
+		# The following code would obtain the request payload
+		# contentLen = int(self.headers.get("Content-Length"), 0)
+		# payload = self.rfile.read(contentLen)
+
+		# Parse the command
+		command = (self.headers.get("Command", None))
+		if command is None:
+			self.send_header("Content-Type", "application/json")
+			self.send_header("Command", "<empty>")
+			self.send_response(200)
+			self.end_headers()
+
+			# Reply with list of available commands
+			payload = {
+				"test": "Test endpoint with server information"
+			}
+			self.wfile.write(bytes(dumps(payload), "utf-8"))
+			return
+
+		# match command:
+		# 	case "test":
+
+		try:
+			# response = self.execute_command(parsed_input)
+			self.send_response(200)
+			self.send_header("Content-Type", "application/text")
+			self.send_header("submissive", "true")
+			self.send_header("breedable", "true")
+			self.end_headers()
+			self.wfile.write(b"ooga booga")
+		except Exception:
+			self.send_error(500)
 	
-	# GET -> Default implementationstart
+	# GET -> Default implementation
 
 # --------------------------------------------------------------------------- #
 
 # Support testing outside of OBS
 def serverTest(port):
 	print("This is an HTTP server test!")
-	alertServer = HTTPServer(("localhost", port), RequestHandler)
+	alertServer = HTTPServer(("127.0.0.1", port), RequestHandler)
 
 	serverThread = Thread(target = alertServer.serve_forever)
 	serverThread.start()
 	
-	time.sleep(5)
+	input("Press enter to continue...")
 
-	print("Exiting...")
+	print("Begin shutdown")
 	alertServer.shutdown()
 	serverThread.join()
 
@@ -392,11 +422,6 @@ def script_properties():
 	# if SCRIPT is None: return None
 
 	# OBS will segfault if this is not called from within this function
-	# Theory:
-	# I *think* the script is ran "nested" within a larger Python script.
-	# So when this function returns, the binding is saved within the parent
-	# script, so the destruction of this script does not Null the binding,
-	# causing OBS core to segfault by freeing a Null pointer
 	properties = obs.obs_properties_create()
 
 	SCRIPT.setProperties(properties)

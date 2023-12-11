@@ -1,0 +1,167 @@
+/* @import url("https://drayux.com/styles/fonts/axiforma.css"); */
+/* @import url("https://drayux.com/styles/fonts/curse-casual.css"); */
+@import url("https://drayux.com/styles/fonts/jetbrains-mono.css");
+
+:root {
+    --accent-size: 26px;
+    --name-size: 25px;
+    --host-size: 20px;
+    --message-size: 18px;
+    --alert-size: 24px;
+    /* --accent-color: rgb(122, 124, 240); */
+}
+
+body { margin: 0px; }
+span { display: block; }
+
+@keyframes animateIn {
+    /* 
+    0%      {
+        transform: translate(-105%, 0%) scale(0.8, 0.05);
+        opacity: 0;
+    }
+    30%     {
+        transform: scale(0.95, 0.5);
+    }
+    100%    {
+        transform: translate(0%, 0%) scale(1.0, 1.0);
+        opacity: 1;
+    }
+    */
+    0%      {
+        transform: translate(-105%, 0%);
+        opacity: 0;
+    }
+    100%    {
+        transform: translate(0%, 0%);
+        opacity: 1;
+    }
+}
+
+@keyframes animateOut {
+    0%      {
+        transform: translate(0%, 0%);
+        opacity: 1;
+    }
+    100%    {
+        transform: translate(-105%, 0%);
+        opacity: 0;
+    }
+}
+
+.log {
+    position: absolute;
+    bottom: 0px;
+    width: 600px;
+    /* background-color: greenyellow; */
+    font-family: Jetbrains-Mono;
+    color: #e2e8ea;
+    /* display: table-row; */
+}
+.chat {
+    margin-top: 18px;
+    margin-bottom: 0px;
+    margin-left: 4px;
+    margin-right: 4px;      /* Techically don't need this one */
+    line-height: 1.175;
+    /* border-color: var(--accent-color, black); */
+    /* padding: 8px; */
+
+    /* <First animation> <animation duration> <animation start delay> <curve> <effects persist>, <Second animation> ... */
+    animation: animateIn 0.5s cubic-bezier(0.075, 0.82, 0.165, 1) forwards, animateOut 0.333s 30.5s cubic-bezier(0.95, 0.05, 0.795, 0.035) forwards;
+}
+.title::before {
+    content: "//";
+    margin-right: 4px;
+    font-weight: 900;
+    font-size: var(--accent-size, 20px);
+}
+/*.title::after {
+    content: "@Xenoderg";
+    font-weight: 900;
+    font-size: var(--host-size, 16px);
+    padding-left: 2px;
+}*/
+.title {
+    padding-top: 4px;
+    padding-bottom: 4px;
+    padding-left: 12px;
+    padding-right: 20px;
+    border-top-left-radius: 14px;
+    border-top-right-radius: 16px;
+    border-bottom-right-radius: 16px;
+    font-size: var(--name-size, 20px);
+    font-weight: 800;
+    background-color: var(--accent-color, black);
+    /* background-color: rgba(0, 0, 0); */
+    text-transform: uppercase;
+    /* font-style: italic; */
+    display: inline;
+}
+/* We add the stylization here as well to offset the message text by the same distance /
+.message::before {
+    content: "//";
+    font-weight: 900;
+    font-size: var(--accent-size, 20px);
+    line-height: 0;
+    opacity: 0;
+} */
+.content, .emote-message {
+    font-size: var(--message-size, 16px);
+    font-weight: 700;
+    /* font-family: Curse-Casual; */
+    /* font-family: Axiforma; */
+    margin-top: -16px;
+    padding-top: 33px;
+    padding-bottom: 13px;
+    padding-left: 18px;
+    padding-right: 18px;
+    border-top-right-radius: 16px;
+    border-bottom-left-radius: 16px;
+    /* border-bottom-right-radius: 5px; */
+    border-bottom-right-radius: 16px;
+    /* background-color: lightblue; */
+    background-color: rgba(20, 20, 20, 0.85);
+    border-left: solid;
+    border-bottom: solid;
+    /* border-right: solid; */
+    /* border-top: solid; */
+    /* border-color: inherit; */
+    border-color: var(--accent-color, black);
+    border-width: 4px;
+}
+.emote-message {
+    padding-bottom: 6px;
+}
+.emote-message > .emote {
+    --size: 48px;
+    width: var(--size);
+    height: var(--size);
+    margin-top: 0px;
+    margin-bottom: 0px;
+    /* margin-bottom: calc(var(--size) * -0.25); */
+}
+.message-part {
+    display: inline;
+}
+.emote {
+    --size: 28px;
+    width: var(--size);
+    height: var(--size);
+    display: inline;
+    margin-top: calc(var(--size) * -0.25);
+    margin-bottom: calc(var(--size) * -0.25);
+    /* transform: translate(0, 25%); */
+}
+.alert {
+    font-size: var(--alert-size, 16px);
+    font-weight: 800;
+    /* margin-top: -24px; */
+    padding-top: 18px;
+    padding-bottom: 18px;
+    padding-left: 32px;
+    padding-right: 32px;
+    border-radius: 16px;
+    background-color: var(--accent-color, black);
+    /* background-color: rgba(36, 37, 37, 0.425); */
+}
