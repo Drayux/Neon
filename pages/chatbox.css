@@ -3,9 +3,9 @@
 :root {
     /* Define these bad boys in OBS */
     /* (0, 0) is bottom-left (TODO: Reversed chat mode) /
-    --gPosX: 0px;
-    --gPosY: 0px;
-    --gBoxWidth: 600px;
+    --gChatPosX: 0px;
+    --gChatPosY: 0px;
+    --gChatWidth: 600px;
     */
 
     /* Color accent palette */
@@ -48,8 +48,8 @@ html { height: 100% }
 
 #chatbox {
     /* Sizes */
-    --gFontSizeTitle: 25px;
-    --gFontSizeHost: 20px;
+    --gFontSizeTitle: 20px;
+    --gFontSizeHost: 16px;
     --gFontSizeText: 18px;
     --gFontSizeReply: 15px;
     --gFontSizeAlert: 24px;
@@ -58,25 +58,25 @@ html { height: 100% }
     --gEmoteSizeReact: 60px;
     --gEmoteSizeAlert: 36px;
 
-    --gChatSkew: -5deg;
+    --gChatSkew: -4deg;
     --gBorderSize: 4px;
-    --gBorderRadius: 16px;
-    --gImageHeight: 200px;
+    --gBorderRadius: 14px;
+    --gImageHeight: 220px;
     /* --gDecorationSize: 26px;        /* This one could be local since the decoration is unique to this style */
     
     /* Margins */
-    --gTitlePaddingVert: 6px;
-    --gTitlePaddingSide: 16px;
+    --gTitlePaddingVert: 5px;
+    --gTitlePaddingSide: 17px;
 
-    --gContentTitle: 20px;
-    --gContentPaddingSide: 18px;
-    --gContentPaddingText: 12px;
+    --gContentTitle: 22px;
+    --gContentPaddingSide: 12px;
+    --gContentPaddingText: 8px;
     --gContentPaddingReact: 4px;
     --gContentPaddingAlert: 24px;
     --gContentPaddingSmallEmote: 0px;   /* Defined in emoteonly and added to content padding */
     --gContentPaddingBigEmote: -4px;    /* Defined in emoteonly and added to content padding */
     
-    --gChatSpacing: 32px;           /* Vertical distance chat messages are seperated */
+    --gChatSpacing: 30px;           /* Vertical distance chat messages are seperated */
     --gEmoteSpacing: 3px;           /* Horizontal distances emotes are spaced */
 
     /* Colors */
@@ -85,7 +85,7 @@ html { height: 100% }
     --gBackgroundColor: hsla(200, 15%, 5%, 80%);
     --gBackgroundColorAlert: hsla(200, 15%, 3%, 90%);
     --gBackgroundColorError: hsl(0, 60%, 60%);
-    --gImageOpacity: 0.67;
+    --gImageOpacity: 0.75;
 
     /* Animations */
     --gAnimateInSpeed: 0.5s;
@@ -98,15 +98,15 @@ html { height: 100% }
     
     position: absolute;
     /* bottom: calc( 100% - var(--gPosY) ); */
-    bottom: var(--gPosY, 0px);
-    left: var(--gPosX, 0px);
-    width: var(--gBoxWidth, 600px);
+    bottom: var(--gChatPosY, 0px);
+    left: var(--gChatPosX, 0px);
+    width: var(--gChatWidth, 600px);
     color: var(--gFontColor);
     font-family: Jetbrains-Mono;
     font-size: 0px;     /* This modifies the size of the inline whitespace nodes */
 
     /* Skew should be performed with StreamFX as this skew is much more pixelated */
-    /* transform: skew(0deg, var(--gChatSkew)); */
+    transform: skew(0deg, var(--gChatSkew));
 }
 
 /* .chat > span { display: block; } */
@@ -184,7 +184,7 @@ html { height: 100% }
     margin-left: -6px;
     padding-right: 2px;
     content: "//";
-    font-size: 26px;
+    font-size: 22px;
     font-weight: 900; }
 .title {
     margin-top: calc(-1 * var(--titleOffset, var(--gContentTitle)));
@@ -210,7 +210,7 @@ html { height: 100% }
 }
 
 .host::before {
-    padding-left: 2px;
+    padding-left: 4px;
     padding-right: 2px;
     content: '@'; }
 .host {

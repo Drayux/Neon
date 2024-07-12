@@ -1,5 +1,8 @@
-// -- TENOR INTEGRATION --
-const TENORKEY = "sorry not for you :)";
+// -- TWITCH API --
+const TWITCHKEY = "put-your-twitch-auth-token-here"
+
+// -- TENOR API --
+const TENORKEY = "put-your-tenor-client-id-here";
 const TENORCLIENT = "neon-chatbox";
 
 // Returns a JSON object of X results matching the search query
@@ -116,14 +119,14 @@ function parseMessage(data) {
 
 // -- IRC MESSAGE HANDLING --
 // Expects an object built by parseMessage()
-async function handleMessage(ircmsg, irc) {
-    let command = ircmsg.command;
+async function handleMessage(msg, sock) {
+    let command = msg.command;
     if (!command) return;
 
     switch (command.type) {
         case "PING":
-            keepAlive = "PONG :$".replace('$', ircmsg.params);
-            irc.send(keepAlive);
+            keepAlive = "PONG :$".replace('$', msg.params);
+            sock.send(keepAlive);
 
             let date = new Date();
             let datestr = "[" + date.getHours() + ":" + date.getMinutes() + ":" + date.getSeconds() + "] ";
@@ -132,7 +135,7 @@ async function handleMessage(ircmsg, irc) {
             break;
 
         case "USERNOTICE":
-            console.log(ircmsg.command + ": " + ircmsg.params);
+            console.log(msg.command + ": " + msg.params);
             break;
 
         case "PRIVMSG":
@@ -150,8 +153,8 @@ async function handleMessage(ircmsg, irc) {
                     command: <Is this message a command>
                     _ref: <Reference to the HTML document element, appended by CHATLOG.generate()>
                 }   */
-            let format = {};
-            if (CHATLOG.docref) formatChat(format, ircmsg);
+            var format = {};
+            if (CHATLOG.docref) formatChat(format, msg);
 
             // Ignore messages from specified usernames
             // (TODO: This could use a refactor to easily support a list of names -- Probably use a dict for name lookup)
@@ -162,7 +165,7 @@ async function handleMessage(ircmsg, irc) {
             // NOTE: Handle messages will never await if the message is not a command, so the
             //       message order should be determinstic if I understand the event queue correctly
             let botspeak = (format.command) ? await handleCommands(format) : null;
-            if (botspeak) irc.send("PRIVMSG $1 :$2"
+            if (botspeak) sock.send("PRIVMSG $1 :$2"
                 .replace('$1', command.channel)
                 .replace('$2', botspeak)
             );
@@ -174,21 +177,35 @@ async function handleMessage(ircmsg, irc) {
 
         case "WHISPER":
             // TODO: This could be used for a link approval system
-            console.warn("TODO: Bot whisper functionality! ($)".replace('$', ircmsg.params));
+            console.warn("TODO: Bot whisper functionality! ($)".replace('$', msg.params));
+            break;
+
+        case "NOTICE":
+            // Message from Twitch that something went wrong
+            console.warn("IRC Error: " + msg.params);
+            IRC.disconnect();
+            
+            var format = {
+                content: msg.params,
+                alert: true,
+                error: true
+            };
+            CHATLOG.generate(format);
+
             break;
 
         case "CLEARCHAT":
         case "CLEARMSG":
         case "GLOBALUSERSTATE":
         case "HOSTTARGET":
-        case "NOTICE":
         case "ROOMSTATE":
         case "USERSTATE":
-            console.log("TODO: " + ircmsg);
+            console.log("TODO: ");
+            console.log(msg);
             break;
         
         case "RECONNECT":
-            if (irc.sock) irc.sock.close();             // Will begin a reconnect via the onclose event handler
+            if (sock) sock.close();             // Will begin a reconnect via the onclose event handler
             break;
     }
 }
@@ -479,7 +496,7 @@ const CHATLOG = {
     index: 0,
     pending: 0,
     
-    _init(s = 10) {
+    _init(s = 20) {
         if (s < 1) return;
         if (this.data) this.clear();
         this.size = s;
@@ -759,7 +776,7 @@ const IRC = {
                 if (e.length == 0) return;
                 let ircmsg = parseMessage(e);
                 // console.log(ircmsg);     // DEBUG: Show the raw IRC message string
-                handleMessage(ircmsg, twitchsock);
+                handleMessage(ircmsg, self.sock);
             });
         });
 
@@ -768,10 +785,10 @@ const IRC = {
             console.log("Websocket successfully established connection");
             self.timeout = 1000;      // Attempt successful, reset the retry timeout
 
-            twitchsock.send("PASS oauth:also not for you");
-            twitchsock.send("NICK good luck!");
-            twitchsock.send("JOIN #your channel owo");
-
+            twitchsock.send("PASS oauth:$".replace('$', TWITCHKEY));
+            twitchsock.send("NICK xenoderg");
+            twitchsock.send("JOIN #drayux");
+            
             self.sock.send("CAP REQ :twitch.tv/commands");
             self.sock.send("CAP REQ :twitch.tv/tags");
         });
