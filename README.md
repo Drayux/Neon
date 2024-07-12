@@ -13,7 +13,7 @@ Avid users of Firebot may wonder what this project offers instead. Both Neon and
 - cqueues: Lua event handling and socket management [Artix/Arch package: `lua-cqueues`]  
 > [CQueues Homepage](https://25thandclement.com/~william/projects/cqueues.html)
 
-- openssl: Library for TLS (Transport Layer Security, aka HTTPS/WSS) [Artix/Arch package: `lua-luaossl`]  
+- openssl: Lua bindings for TLS (Transport Layer Security, aka HTTPS/WSS) [Artix/Arch package: `lua-luaossl`]  
 > Twitch requires TLS for the use of its API
 
 - **Unix-based operating system** (aka this does _not_ work on Windows)  
