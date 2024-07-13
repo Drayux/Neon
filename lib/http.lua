@@ -6,6 +6,11 @@ local codes = {
 	_404 = "NOT FOUND",
 }
 
+-- Returns target state on a timeout event
+local function handleTimeout(conn, state)
+	conn.interrupt = "END"
+end
+
 local function handleTLS(conn, state)
 	print("TODO: upgrade/downgrade TLS")
 	return "NEW"
@@ -15,8 +20,9 @@ local function parseRequest(conn, state)
 	-- Parse start line
 	-- Assume TLS is accounted for (TODO: for now client should only request HTTP unsecure)
 	-- NOTE: Match only '\n' as xread is set to CRLF -> LF conversion mode
-	local line = conn:receive("*L")
-	local m, e, v = line:match("^(%w+) (%S+) HTTP/(1%.[01])\n$")
+	local status = conn:receive("*L")
+	if status then return status end
+	local m, e, v = conn.buffer:match("^(%w+) (%S+) HTTP/(1%.[01])\n$")
 
 	-- Clients can begin a request with an empty line
 	if not m then return "NEW" end
@@ -31,8 +37,9 @@ local function parseRequest(conn, state)
 	state.request.headers = {}
 	local header, value = nil, nil
 	repeat 
-		line = conn:receive("*l") or ""
-		header, value = line:match("^([^:]+):[ \t]*(.-)[ \t]*$")
+		status = conn:receive("*l")
+		if status then return status end
+		header, value = conn.buffer:match("^([^:]+):[ \t]*(.-)[ \t]*$")
 
 		if header then
 			-- Error bad request if nil value or header has whitespace before colon
@@ -52,6 +59,8 @@ end
 -- HEAD -> Stat the requested file
 -- POST -> Process a command
 local function processRequest(conn, state)
+	local status = nil
+
 	-- TODO: Check for websocket upgrade
 	
 	-- No websocket, "complete" the instance
@@ -69,7 +78,10 @@ local function processRequest(conn, state)
 			return "RES"
 
 		elseif length == 0 then state.request.body = ""
-		else state.request.body = conn:receive("-" .. length)
+		else
+			status = conn:receive("-" .. length)
+			if status then return status end
+			state.request.body = conn.buffer
 		end
 
 		-- TODO: Process the body (if necessary)
@@ -106,6 +118,7 @@ end
 
 -- Sends response data to the client
 -- TODO: Make sure this coroutine shuts down properly
+-- TODO: HTTP respect keep-alive request
 local function resolveRequest(conn, state)
 	local newline = "\r\n"
 
@@ -152,10 +165,15 @@ local http = {
 	APP = nil,	-- Websocket mode
 	RES = resolveRequest,	-- Send server response
 	END = close,
+
+	-- Interrupt routines
+	_TIMEOUT = handleTimeout,
 }
 
 -- Define start/end states for the transition table
 setmetatable(http, { __index = function(tbl, key)
+	if not key then return nil end
+
 	if key == "START" then
 		return tbl["NEW"]
 	end

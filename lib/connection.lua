@@ -9,17 +9,18 @@ local function _new(s, c, t)
 	-- Type checks
 	assert(cqsock.type(s) == "socket")
 	assert(cqcore.type(c) == "controller")
-	local timeout = t or 5
+	local deadline = t or 5
 
 	local obj = {
 		-- Coroutine management
 		socket = s,
 		controller = c,
 		trigger = cqcond.new(),
-		-- TODO: Rough idea for the timeout/keep-alive mechanism
-		expiration = cqcore.monotime() + timeout,
+		expiration = cqcore.monotime() + deadline,
+		interrupt = nil,		-- Target state after an interrupt routine
 
 		-- Functionality
+		buffer = nil,
 		transitions = nil,
 		commands = nil,
 	}
@@ -32,18 +33,22 @@ end
 -- >> OBJECT API <<
 
 -- Retrieve any pending data (HTTP CRLF standard)
--- TODO: This may need error/timeout handling
+-- TODO: This may need error/timeout handling (use the status!)
 -- NOTE: The current mode translates CRLF -> LF
 function api:receive(fmt, mode)
+	self.buffer = nil
 	local data, status = self.socket:recv(fmt, mode)
 	while not data do
 
 		-- https://github.com/wahern/cqueues/blob/master/src/socket.lua#L544
-		cqcore.poll(self.socket, self.trigger)
+		local timeout = self.trigger:wait(self.socket)
+		if timeout then return self.interrupt end
+
 		data, status = self.socket:recv(fmt, mode)
 
 	end
-	return data
+	self.buffer = data
+	return nil
 end
 
 -- Send data via the connection
@@ -57,19 +62,56 @@ end
 -- Run the connection state machine
 function api:run(state)
 	if not state or not self.transitions then return end
+	local transition = "START"
 
+	-- Keep-alive/timeout routine
 	self.controller:wrap(function()
-		local tr = "START"
-		local op = nil
-		while tr do
-			print("Conn state: " .. tostring(tr))
+		while true do
 
-			op = self.transitions[tr]
+			-- Connection is closed, stop the coroutine
+			if not transition then
+				print("Stopping timeout routine")
+				return
+			end
+
+			-- The connection life may have been extended
+			local timeout = self.expiration - cqcore.monotime()
+			if timeout > 0 then
+				print("waiting for " .. timeout .. " seconds")
+				cqcore.poll(timeout + 0.01) -- +10ms
+				goto alive
+			end
+
+			-- Connection has timed out
+			state.message = "Connection timed out"
+			local op = self.transitions["_TIMEOUT"]
+			pcall(op, self, state)
+
+			if self.interrupt then transition = self.interrupt end
+			self.trigger:signal()
+			cqcore.poll()
+
+		::alive:: end
+	end)
+
+	-- Test connection timeout during state transition
+	-- Use: `cqcore.poll(dummy)` instead of the empty poll
+		-- local dummy = cqcond.new()
+		-- self.controller:wrap(function()
+		-- 	cqcore.poll(8)
+		-- 	dummy:signal()
+		-- end)
+
+	-- State machine routine
+	self.controller:wrap(function()
+		while transition do
+			print("Conn state: " .. tostring(transition))
+
+			local op = self.transitions[transition]
 			if not op then return end
 
-			tr = op(self, state)
-
-			::continue::
+			-- Consider adding some form of check: if tr (before) is "END" and tr (after) is not nil then leave tr as "END"
+			transition = op(self, state)
 			cqcore.poll()
 		end
 		
