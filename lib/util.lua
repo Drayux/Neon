@@ -1,15 +1,18 @@
 -- >>> util.lua: Connection utility functions
 
-local osslctx = require("openssl.ssl.context")
+local module = {}
 
--- TODO: Add paramater for client/server differentiation
-local function tlscontext()
-	local context = osslctx.new("TLS", true)
+-- Attempt to find the working directory of the script 
+function module.getcwd()
+	-- TODO: if obslua, then this should be easy?
+	
+	-- Definitely a hack, but the script shouldn't run unless
+	-- we're in the correct working directory to begin with
+	local path = io.popen("pwd"):read()
+	if path:match("Neon$") then return path end
+
+	return nil
 end
-
-local module = {
-	-- Add functions here
-}
 
 return module
 

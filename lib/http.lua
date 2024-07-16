@@ -34,12 +34,13 @@ local codes = {
 }
 
 -- >> STATE OBJECT <<
-local function newState()
-	return {
+local function _newState(args)
+	if not args then args = {} end
+	local state = {
 		protocol = nil,
 		version = nil,
-		path = nil,
-		message = nil,
+		path = args.path,
+		commands = args.commands,
 		request = {
 			method = nil,
 			endpoint = nil,
@@ -51,7 +52,54 @@ local function newState()
 			headers = {},
 			body = "",
 		},
+		message = nil,
 	}
+
+	return state
+end
+
+
+-- >> UTILITY <<
+
+-- Opens a file via Lua's IO API
+-- If the path doesn't exist, then attempt the provided extension
+-- If the path is a directory, open the index instead
+-- Returns the file object or nil, and the type
+local function _openFile(path, ext)
+	local file = nil
+	local status = nil
+	local content = nil
+
+	-- NOTE: This will recursively check directories whose children are named "index.html"
+	while true do
+		-- Check that the file exists
+		file = io.open(path, "rb")
+		if not file then
+			if type(ext) == "string" then
+				file = _openFile(path .. "." .. ext, nil)
+				return file, status
+			end
+			return nil, status or "NONE"
+		end
+
+		-- Content is nil if file is a directory
+		local content = file:read(0)
+		if content then
+			return file, status or "FILE"
+		end
+
+		file:close()
+		path = path .. "/index.html"
+		ext = nil
+		status = "DIR"
+	end
+end
+
+-- Reads a file in to the body and sets the appropriate headers
+-- TODO: (consider) this could be its own coroutine, relevant for large files
+-- Alternatively, only read in so many bytes before sending
+-- Note that doing so would also require resource sharing from the OS
+local function _serveFile(file, state)
 end
 
 
@@ -165,21 +213,74 @@ local function processRequest(conn, state)
 		end
 	end
 
-	-- Serve the requested file
-	-- TODO: This could be moved to a coroutine
-	-- Something like wrap a new function, at the end of file IO, run a trigger for which the outside routine polls
-	-- local path = 
-	-- local file = io.open()
-	state.response.status = 200
-	state.response.body = "<!DOCTYPE html>" ..
-		"<html>" ..
-			"<body>" ..
-				"<h1>" ..
-					"hello world" ..
-				"</h1>" ..
-			"</body>" ..
-		"</html>"
+	-- No content if server does not have a serve directory
+	if not state.path then
+		state.response.status = 204
+		state.message = "No serve directory specified"
+		return "RES"
+	end
+
+	-- TODO: HTML escape code processing
+	local endpoint = state.request.endpoint
+	endpoint = endpoint:gsub("/+", "/") -- Fixup duplicated '/'
+	endpoint = endpoint:match("^(/[%S]-)/?$") -- Requests may have trailing '/'
+	if not endpoint or (endpoint .. "/"):match("/../") then
+		-- Don't serve malformed or parent paths: bad request
+		return "RES"
+	end
+
+	local name = endpoint:match("^.*/(.-)$")
+	local n, ext = name:match("(.+)%.(.-)$")
+	name = n or name
 	
+	-- Filter for known extensions
+	ext = ext and (
+		ext:match("html") or
+		ext:match("js") or
+		ext:match("css") or
+		ext:match("png")
+	)
+
+	-- Open requested file
+	local file, type = _openFile(state.path .. endpoint, not ext and "html" or nil)
+	if file then
+		-- File exists
+		state.response.status = 200
+	else
+		if type == "DIR" then
+			-- Path exists, but there is no content available
+			-- TODO: This is where to implement directory indexing
+			state.response.status = 204
+		else
+			-- Requested file does not exist
+			-- TODO: This is where to implement fancy error pages
+			state.response.status = 404
+		end
+		return "RES"
+	end
+
+	-- No need to read the file if we just want the head
+	if state.request.method == "HEAD" then
+		file:close()
+		return "RES"
+	end
+
+	-- Read the file and deliver it to the client
+	-- TODO: Body chunking
+	-- state.response.body = "<!DOCTYPE html><html><body><h1>hello world</h1></body></html>"
+	state.response.body = file:read("*a")
+	file:close()
+
+	if not state.response.body then
+		state.response.status = 500
+		state.message = "Attemped to serve nil body"
+		return "RES"
+	end
+
+	local headertbl = state.response.headers
+	headertbl["Content-Type"] = "text/html"
+	headertbl["Content-Length"] = tostring(#state.response.body)
+
 	-- TODO: Check for other method types and set status to 501 or 400
 	return "RES"
 end
@@ -196,10 +297,6 @@ local function resolveRequest(conn, state)
 	conn:send(protocol .. " " .. code .. " " .. codes["_" .. code] .. newline)
 
 	-- Send headers
-	local headertbl = state.response.headers
-	headertbl["Content-Type"] = "text/html"
-	headertbl["Content-Length"] = tostring(#state.response.body)
-
 	local headers = ""
 	for k, v in pairs(state.response.headers) do
 		headers = headers .. k .. ": " .. v .. newline
@@ -211,8 +308,6 @@ local function resolveRequest(conn, state)
 		conn:send(state.response.body .. newline)
 	end
 	
-	-- Send final empty line
-	conn:send(newline)
 	conn.socket:flush()
 	return "END"
 end
@@ -271,7 +366,7 @@ end })
 -- >> MODULE API <<
 local module = {
 	transitions = function() return http end,
-	state = newState,
+	state = _newState,
 }
 return module
 

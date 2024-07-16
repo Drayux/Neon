@@ -5,26 +5,26 @@ local cqsgnl = require("cqueues.signal")
 
 local connection = require("lib.connection")
 local http = require("lib.http")
+local util = require("lib.util")
 
--- local protocols = "websocket ws/1 http3 /3 https/2.4"
--- for p in protocols:gmatch("([^/%s]%S+)%s?") do
--- 	local a, b = p:match("^([^/]+)/*(.-)$")
--- 	print(tostring(a) .. " " .. tostring(b))
--- end
--- if true then return end
 
 local controller = cqcore.new()
 local server = {
 	socket = cqsock.listen("127.0.0.1", 1085),
 	trigger = cqcond.new(),
 	running = false,
-	timeout = 10,
 	connections = {},
+
+	-- These will become script arguments (also the port and various integrations)
+	timeout = 10,
+	rootdir = util.getcwd() .. "/pages",
 }
 
 function server:loop()
 	self.running = true
 	while self.running do
+
+		-- TODO: If max connections, wait for one to close (go to next loop)
 
 		local sock = self.socket:accept(0)
 		if sock == nil then
@@ -39,12 +39,12 @@ function server:loop()
 			print("New connection: " .. #self.connections)
 
 			-- Add an HTTP state machine to the connection
-			-- TODO: Add serve directory as a parameter to http.state()
-			conn.transitions = http.transitions()
-			conn.state = http.state()
-			-- conn.commands = ...
+			local args = {
+				path = self.rootdir,
+				commands = nil,
+			}
 
-			conn:run()
+			conn:run(http, args, self.trigger)
 		end
 
 	end

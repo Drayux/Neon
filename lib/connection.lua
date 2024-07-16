@@ -23,7 +23,6 @@ local function _new(s, c, t)
 		state = nil,
 		transitions = nil,
 		buffer = nil,
-		commands = nil,
 	}
 
 	setmetatable(obj, {__index = api})
@@ -34,8 +33,8 @@ end
 -- >> OBJECT API <<
 
 -- Retrieve any pending data (HTTP CRLF standard)
--- TODO: This may need error/timeout handling (use the status!)
 -- NOTE: The current mode translates CRLF -> LF
+-- TODO: (consider fixing) If the connection dies, then this "hangs" at the poll
 function api:receive(fmt, mode)
 	self.buffer = nil
 	local data, status = self.socket:recv(fmt, mode)
@@ -55,16 +54,28 @@ end
 -- Send data via the connection
 -- TODO: Unsure of how to specify protocol just yet
 function api:send(data)
-	assert(type(data) == "string")
+	if not type(data) == "string" then return end
+
 	self.socket:xwrite(data, "b")
 	-- self.socket:send(data, 1, #data, "b")
 end
 
 -- Run the connection state machine
-function api:run(state, transitions)
-	self.state = state or self.state
-	self.transitions = transitions or self.transitions
-	if not self.state or not self.transitions then return end
+-- Args should be a table of optional state machine-specific parameters
+-- Notify is an optional cqueues.condition that will be signaled when the state machine exits
+function api:run(module, args, notify)
+	-- A state machine won't work without a state and transitions
+	if not self.state then
+		local status, ret = pcall(module.state, args)
+		if status and ret then self.state = ret
+		else return end
+	end
+	
+	if not self.transitions then
+		local status, ret = pcall(module.transitions)
+		if status and ret then self.transitions = ret
+		else return end
+	end
 
 	-- Keep-alive/timeout routine
 	local transition = "START"
@@ -77,7 +88,7 @@ function api:run(state, transitions)
 			-- The connection lifetime may have been extended
 			local timeout = self.expiration - cqcore.monotime()
 			if timeout > 0 then
-				print("waiting for " .. timeout .. " seconds")
+				print(" > Timeout in " .. string.format("%.1f", timeout) .. "s")
 				cqcore.poll(self.trigger, timeout + 0.01) -- +10ms
 				goto alive
 			end
@@ -121,6 +132,9 @@ function api:run(state, transitions)
 		end
 		
 		print("Connection closed: " .. tostring(self.state.message))
+		if cqcond.type(notify) == "condition" then
+			notify:signal()
+		end
 	end)
 end
 
