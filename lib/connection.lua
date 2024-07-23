@@ -12,17 +12,20 @@ local function _new(s, c, t)
 	local exp = t and (cqcore.monotime() + t) or nil
 
 	local obj = {
-		-- Coroutine management
+		-- Socket
 		socket = s,
+		buffer = nil,
+
+		-- Coroutine management
 		controller = c,
 		trigger = cqcond.new(),
 		expiration = exp,
-		interrupt = nil,		-- Target state after an interrupt routine
 
-		-- Functionality
-		state = nil,
-		transitions = nil,
-		buffer = nil,
+		-- Functionality (state machine)
+		state = nil,			-- Current state transition
+		interrupt = nil,		-- Target state after an interrupt
+		transitions = nil,		-- Transition table
+		instance = nil,			-- State storage (connection instance)
 	}
 
 	setmetatable(obj, {__index = api})
@@ -33,6 +36,7 @@ end
 -- >> OBJECT API <<
 
 -- Retrieve any pending data (HTTP CRLF standard)
+-- Usage of this function should always check for timeouts
 -- NOTE: The current mode translates CRLF -> LF
 -- TODO: (consider fixing) If the connection dies, then this "hangs" at the poll
 function api:receive(fmt, mode)
@@ -52,12 +56,29 @@ function api:receive(fmt, mode)
 end
 
 -- Send data via the connection
--- TODO: Unsure of how to specify protocol just yet
+-- Usage of this function should always check for timeouts
 function api:send(data)
+	if not data then data = self.buffer end
 	if not type(data) == "string" then return end
 
-	self.socket:xwrite(data, "b")
-	-- self.socket:send(data, 1, #data, "b")
+	local sent = 1
+	while sent <= #data do
+		local idx = self.socket:send(data, 1, #data, "b")
+		sent = sent + idx
+		if sent <= #data then
+			local timeout = self.trigger:wait(self.socket)
+			if timeout then return true end
+		end
+	end
+
+	local flushed = self.socket:flush("n", 0)
+	while not flushed do
+		local timeout = self.trigger:wait(self.socket)
+		if timeout then return true end
+
+		flushed = self.socket:flush("n", 0)
+	end
+	return false
 end
 
 -- Run the connection state machine
@@ -65,9 +86,9 @@ end
 -- Notify is an optional cqueues.condition that will be signaled when the state machine exits
 function api:run(module, args, notify)
 	-- A state machine won't work without a state and transitions
-	if not self.state then
-		local status, ret = pcall(module.state, args)
-		if status and ret then self.state = ret
+	if not self.instance then
+		local status, ret = pcall(module.instance, args)
+		if status and ret then self.instance = ret
 		else return end
 	end
 	
@@ -77,32 +98,34 @@ function api:run(module, args, notify)
 		else return end
 	end
 
-	-- Keep-alive/timeout routine
+	-- (Soft) timeout routine
 	local transition = "START"
 	self.controller:wrap(function()
-		while self.expiration do
+		while transition do
 
-			-- Connection is closed, stop this routine
-			if not transition then return end
+			-- Connection has infinite lifetime
+			if not self.expiration then return end
 
 			-- The connection lifetime may have been extended
-			local timeout = self.expiration - cqcore.monotime()
+			local timeout = self.expiration - cqcore.monotime() + 0.01 -- +10ms
 			if timeout > 0 then
 				print(" > Timeout in " .. string.format("%.1f", timeout) .. "s")
-				cqcore.poll(self.trigger, timeout + 0.01) -- +10ms
 				goto alive
 			end
 
 			-- Run the timeout handler (unless another interrupt is pending)
+			-- Handler is responsible for setting a new expiration
+			timeout = 0
 			if not self.interrupt then
 				local handler = self.transitions["_TIMEOUT"]
-				pcall(handler, self, self.state)
-				self.trigger:signal() -- Stop wating for I/O
+				pcall(handler, self, self.instance)
 			end
 
-			cqcore.poll(self.trigger)
+			-- The connection should be restored or killed
+			::alive::
+			cqcore.poll(self.trigger, timeout)
 
-		::alive:: end
+		end
 	end)
 
 	-- Test connection timeout during state transition
@@ -116,22 +139,32 @@ function api:run(module, args, notify)
 	-- State machine routine
 	self.controller:wrap(function()
 		while transition do
-			if self.interrupt then
-				self.interrupt = nil
-				self.trigger:signal() -- Allow interrupts to resume at next poll 
-			end
 
 			print("Connection state: " .. tostring(transition))
 			local func = self.transitions[transition]
 			if not func then return end
 
-			transition = func(self, self.state)
+			-- Step to the next state transition
+			transition = func(self, self.instance)
 			cqcore.poll()
 			
-			transition = transition or self.interrupt
+			-- Alternative solution skeleton
+			-- This considers the situation where we don't wish to always override a
+			-- transition with an interrupt
+				-- -- Only change state if we interrupted I/O
+				-- -- (might be unintuitive because we could move directly into I/O again)
+				-- transition = transition or self.interrupt
+				-- -- "Resolve the the interrupt"
+				-- if transition == self.interrupt then self.interrupt = nil end
+
+			-- Resolve interrupts
+			transition = self.interrupt or transition
+			self.interrupt = nil
+
 		end
 		
-		print("Connection closed: " .. tostring(self.state.message))
+		print("Connection closed: " .. tostring(self.instance.message))
+		self.trigger:signal() -- Notify pending interrupt routines
 		if cqcond.type(notify) == "condition" then
 			notify:signal()
 		end
@@ -139,26 +172,22 @@ function api:run(module, args, notify)
 end
 
 -- Close the connection, respecting its state
--- TODO: Add this possibly as a coroutine, this should check if the socket, state, and/or transitions exist, and then signal to the state machine that the connection should be closed
 function api:close(timeout)
 	-- Connection already closed
 	if not self.socket then return end
 
 	-- Handle this as a state machine interrupt if one exists
-	if self.state and self.transitions then
+	if self.instance and self.transitions then
 		timeout = timeout or 0
 
+		-- Run the handler, overriding any existing interrupts
 		local handler = self.transitions["_CLOSE"]
-		local status, ret = pcall(handler, self, self.state)
+		local status, ret = pcall(handler, self, self.instance)
+		self.interrupt = status and ret or self.interrupt
+
+		-- Loop the state machine until socket closed or timeout
 		local expiration = cqcore.monotime() + timeout + 0.01
-
-		-- Override the timeout interrupt
-		self.state.interrupt = status and ret or self.state.interrupt
-		self.expiration = nil
-
-		self.trigger:signal()
 		while cqcore.monotime() < expiration do
-			-- Run the state machine until we run out of time 
 			cqcore.poll()
 			if not self.socket then return end
 		end
@@ -211,7 +240,7 @@ local module = {
 			end })
 				
 			return pctt end,
-		state = _pcState,
+		instance = _pcState,
 	},
 }
 

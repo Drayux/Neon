@@ -34,9 +34,9 @@ local codes = {
 }
 
 -- >> STATE OBJECT <<
-local function _newState(args)
+local function _newInstance(args)
 	if not args then args = {} end
-	local state = {
+	local obj = {
 		protocol = nil,
 		version = nil,
 		path = args.path,
@@ -55,7 +55,7 @@ local function _newState(args)
 		message = nil,
 	}
 
-	return state
+	return obj
 end
 
 
@@ -95,22 +95,15 @@ local function _openFile(path, ext)
 	end
 end
 
--- Reads a file in to the body and sets the appropriate headers
--- TODO: (consider) this could be its own coroutine, relevant for large files
--- Alternatively, only read in so many bytes before sending
--- Note that doing so would also require resource sharing from the OS
-local function _serveFile(file, state)
-end
-
 
 -- >> TRANSITIONS <<
 
-local function handleTLS(conn, state)
+local function handleTLS(conn, inst)
 	print("TODO: upgrade/downgrade TLS")
 	return "NEW"
 end
 
-local function parseRequest(conn, state)
+local function parseRequest(conn, inst)
 	-- Parse start line
 	-- Assume TLS is accounted for (TODO: for now client should only request HTTP unsecure)
 	-- NOTE: Match only '\n' as xread is set to CRLF -> LF conversion mode
@@ -123,12 +116,12 @@ local function parseRequest(conn, state)
 
 	-- TODO: Additional request validation checks
 
-	state.request.method = m
-	state.request.endpoint = e
-	state.version = v
+	inst.request.method = m
+	inst.request.endpoint = e
+	inst.version = v
 
 	-- Parse request headers
-	state.request.headers = {}
+	inst.request.headers = {}
 	local header, value = nil, nil
 	repeat 
 		timeout = conn:receive("*l")
@@ -138,10 +131,10 @@ local function parseRequest(conn, state)
 		if header then
 			-- Error bad request if nil value or header has whitespace before colon
 			if not value or header:match(".-[%s]$") then
-				state.message = "Invalid header: '" .. tostring(header) .. "' -> '" .. tostring(value) .. "'"
+				inst.message = "Invalid header: '" .. tostring(header) .. "' -> '" .. tostring(value) .. "'"
 				return "RES"
 			end
-			state.request.headers[header] = value
+			inst.request.headers[header] = value
 		end
 	until (header == nil)
 
@@ -152,36 +145,36 @@ end
 -- GET -> Send the requested file
 -- HEAD -> Stat the requested file
 -- POST -> Process a command
-local function processRequest(conn, state)
+local function processRequest(conn, inst)
 	local timeout = nil
 
 	-- Handle server/OBS-frontend commands
-	if state.request.method == "POST" then
+	if inst.request.method == "POST" then
 		if not conn.commands then
 			-- Server is not accepting POST
-			state.message = "Server commands not implemented"
+			inst.message = "Server commands not implemented"
 			return "RES"
 		end
 
 		-- We may expect a body
-		local length = tonumber(state.request.headers["Content-Length"] or 0)
+		local length = tonumber(inst.request.headers["Content-Length"] or 0)
 		if length < 0 then
-			state.message = "Invalid content length"
+			inst.message = "Invalid content length"
 			return "RES"
 
-		elseif length == 0 then state.request.body = ""
+		elseif length == 0 then inst.request.body = ""
 		else
 			timeout = conn:receive("-" .. length)
 			if timeout then return nil end
-			state.request.body = conn.buffer
+			inst.request.body = conn.buffer
 		end
 
 		-- TODO: Process the body (if necessary)
 
 		-- Process the command
-		local command = state.request.headers["Command"]
+		local command = inst.request.headers["Command"]
 		if not command then
-			state.message = "Request absent 'Command' header"
+			inst.message = "Request absent 'Command' header"
 			return "RES" 
 		end
 		
@@ -191,8 +184,8 @@ local function processRequest(conn, state)
 	end 
 
 	-- Check for websocket upgrade
-	local upgrade = state.request.headers["Connection"] == "upgrade"
-	local protocols = state.request.headers["Upgrade"]
+	local upgrade = inst.request.headers["Connection"] == "upgrade"
+	local protocols = inst.request.headers["Upgrade"]
 	
 	if upgrade and protocols then
 		-- Right now we are checking only for websocket
@@ -214,14 +207,14 @@ local function processRequest(conn, state)
 	end
 
 	-- No content if server does not have a serve directory
-	if not state.path then
-		state.response.status = 204
-		state.message = "No serve directory specified"
+	if not inst.path then
+		inst.response.status = 204
+		inst.message = "No serve directory specified"
 		return "RES"
 	end
 
 	-- TODO: HTML escape code processing
-	local endpoint = state.request.endpoint
+	local endpoint = inst.request.endpoint
 	endpoint = endpoint:gsub("/+", "/") -- Fixup duplicated '/'
 	endpoint = endpoint:match("^(/[%S]-)/?$") -- Requests may have trailing '/'
 	if not endpoint or (endpoint .. "/"):match("/../") then
@@ -242,25 +235,25 @@ local function processRequest(conn, state)
 	)
 
 	-- Open requested file
-	local file, type = _openFile(state.path .. endpoint, not ext and "html" or nil)
+	local file, type = _openFile(inst.path .. endpoint, not ext and "html" or nil)
 	if file then
 		-- File exists
-		state.response.status = 200
+		inst.response.status = 200
 	else
 		if type == "DIR" then
 			-- Path exists, but there is no content available
 			-- TODO: This is where to implement directory indexing
-			state.response.status = 204
+			inst.response.status = 204
 		else
 			-- Requested file does not exist
 			-- TODO: This is where to implement fancy error pages
-			state.response.status = 404
+			inst.response.status = 404
 		end
 		return "RES"
 	end
 
 	-- No need to read the file if we just want the head
-	if state.request.method == "HEAD" then
+	if inst.request.method == "HEAD" then
 		file:close()
 		return "RES"
 	end
@@ -268,18 +261,18 @@ local function processRequest(conn, state)
 	-- Read the file and deliver it to the client
 	-- TODO: Body chunking
 	-- state.response.body = "<!DOCTYPE html><html><body><h1>hello world</h1></body></html>"
-	state.response.body = file:read("*a")
+	inst.response.body = file:read("*a")
 	file:close()
 
-	if not state.response.body then
-		state.response.status = 500
-		state.message = "Attemped to serve nil body"
+	if not inst.response.body then
+		inst.response.status = 500
+		inst.message = "Attemped to serve nil body"
 		return "RES"
 	end
 
-	local headertbl = state.response.headers
+	local headertbl = inst.response.headers
 	headertbl["Content-Type"] = "text/html"
-	headertbl["Content-Length"] = tostring(#state.response.body)
+	headertbl["Content-Length"] = tostring(#inst.response.body)
 
 	-- TODO: Check for other method types and set status to 501 or 400
 	return "RES"
@@ -288,33 +281,35 @@ end
 -- Sends response data to the client
 -- TODO: Make sure this coroutine shuts down properly
 -- TODO: HTTP respect keep-alive request
-local function resolveRequest(conn, state)
+local function resolveRequest(conn, inst)
 	local newline = "\r\n"
 
 	-- Send the status line
-	local protocol = "HTTP/" .. tostring(state.version or 1.0)
-	local code = tostring(state.response.status or 400)
-	conn:send(protocol .. " " .. code .. " " .. codes["_" .. code] .. newline)
+	local protocol = "HTTP/" .. tostring(inst.version or 1.0)
+	local code = tostring(inst.response.status or 400)
+	conn.buffer = protocol .. " " .. code .. " " .. codes["_" .. code] .. newline
 
 	-- Send headers
 	local headers = ""
-	for k, v in pairs(state.response.headers) do
+	for k, v in pairs(inst.response.headers) do
 		headers = headers .. k .. ": " .. v .. newline
 	end
-	conn:send(headers .. newline)
+	conn.buffer = conn.buffer .. headers .. newline
 
 	-- Send body (if present)
-	if state.response.body and (#state.response.body > 0) then 
-		conn:send(state.response.body .. newline)
+	if inst.response.body and (#inst.response.body > 0) then 
+		conn.buffer = conn.buffer .. inst.response.body .. newline
 	end
+
+	local timeout = conn:send() -- Send the buffer all at once
+	if timeout then return nil end
 	
-	conn.socket:flush()
 	return "END"
 end
 
-local function closeConnection(conn, state)
-	if not state.message then
-		state.message = "Completed without errors"
+local function closeConnection(conn, inst)
+	if not inst.message then
+		inst.message = "Completed without errors"
 	end
 
 	conn:shutdown()
@@ -325,15 +320,21 @@ end
 -- >> INTERRUPTS <<
 
 -- Checks for connection state and sets a new target
-local function handleTimeout(conn, state)
-	state.message = "Connection timed out"
+local function handleTimeout(conn, inst)
+	inst.message = "Connection timed out"
+
+	conn.expiration = nil
 	conn.interrupt = "END"
+	conn.trigger:signal() -- Send timeout to I/O
 end
 
 -- Close the connection gracefully
-local function handleClose(conn, state)
-	state.message = "Connection shutdown"
+local function handleClose(conn, inst)
+	inst.message = "Connection shutdown"
+
+	conn.expiration = nil
 	conn.interrupt = "END"
+	conn.trigger:signal() -- Send timeout to I/O
 end
 
 
@@ -366,7 +367,7 @@ end })
 -- >> MODULE API <<
 local module = {
 	transitions = function() return http end,
-	state = _newState,
+	instance = _newInstance,
 }
 return module
 

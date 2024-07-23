@@ -45,6 +45,7 @@ function server:loop()
 			}
 
 			conn:run(http, args, self.trigger)
+			cqcore.poll() -- Init the connection before accepting another
 		end
 
 	end
