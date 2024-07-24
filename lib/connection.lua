@@ -3,6 +3,7 @@
 local cqcore = require("cqueues")
 local cqcond = require("cqueues.condition")
 local cqsock = require("cqueues.socket")
+local cqerno = require("cqueues.errno")
 
 local api = {}
 local function _new(s, c, t)
@@ -26,6 +27,7 @@ local function _new(s, c, t)
 		interrupt = nil,		-- Target state after an interrupt
 		transitions = nil,		-- Transition table
 		instance = nil,			-- State storage (connection instance)
+		message = nil,			-- Reason for exit (logging)
 	}
 
 	setmetatable(obj, {__index = api})
@@ -43,6 +45,8 @@ function api:receive(fmt, mode)
 	self.buffer = nil
 	local data, status = self.socket:recv(fmt, mode)
 	while not data do
+		-- Connection was closed early (no trigger)
+		if status == cqerno.EPIPE then return true end
 
 		-- https://github.com/wahern/cqueues/blob/master/src/socket.lua#L544
 		local timeout = self.trigger:wait(self.socket)
@@ -61,9 +65,13 @@ function api:send(data)
 	if not data then data = self.buffer end
 	if not type(data) == "string" then return end
 
+	self.buffer = nil
+
 	local sent = 1
 	while sent <= #data do
-		local idx = self.socket:send(data, 1, #data, "b")
+		local idx, status = self.socket:send(data, 1, #data, "b")
+		if status == cqerno.EPIPE then return true end
+
 		sent = sent + idx
 		if sent <= #data then
 			local timeout = self.trigger:wait(self.socket)
@@ -99,9 +107,9 @@ function api:run(module, args, notify)
 	end
 
 	-- (Soft) timeout routine
-	local transition = "START"
+	self.state = "START"
 	self.controller:wrap(function()
-		while transition do
+		while self.socket do
 
 			-- Connection has infinite lifetime
 			if not self.expiration then return end
@@ -118,10 +126,20 @@ function api:run(module, args, notify)
 			timeout = 0
 			if not self.interrupt then
 				local handler = self.transitions["_TIMEOUT"]
-				pcall(handler, self, self.instance)
+				local status, ret = pcall(handler, self, self.instance)
+				if not status then
+					-- No handler, close the connection
+					self.message = "Connection timed out"
+					self:shutdown()
+
+				elseif self.interrupt then
+					-- Only signal timeout to I/O if normal flow should break
+					self.trigger:signal()
+				end
 			end
 
 			-- The connection should be restored or killed
+			-- Handler should call self.trigger:notify() if necessary
 			::alive::
 			cqcore.poll(self.trigger, timeout)
 
@@ -138,32 +156,34 @@ function api:run(module, args, notify)
 
 	-- State machine routine
 	self.controller:wrap(function()
-		while transition do
+		while self.socket do
 
-			print("Connection state: " .. tostring(transition))
-			local func = self.transitions[transition]
-			if not func then return end
+			print("Connection state: " .. tostring(self.state))
+			local func = self.transitions[self.state]
+			if not func then
+				func = function(conn, inst) conn:shutdown() end
+			end
 
 			-- Step to the next state transition
-			transition = func(self, self.instance)
+			self.state = func(self, self.instance)
 			cqcore.poll()
 			
 			-- Alternative solution skeleton
-			-- This considers the situation where we don't wish to always override a
-			-- transition with an interrupt
+			-- This considers the situation where we don't wish to always override
+			-- a state transition with an interrupt
 				-- -- Only change state if we interrupted I/O
 				-- -- (might be unintuitive because we could move directly into I/O again)
-				-- transition = transition or self.interrupt
+				-- self.state = self.state or self.interrupt
 				-- -- "Resolve the the interrupt"
-				-- if transition == self.interrupt then self.interrupt = nil end
+				-- if self.state == self.interrupt then self.interrupt = nil end
 
 			-- Resolve interrupts
-			transition = self.interrupt or transition
+			self.state = self.interrupt or self.state
 			self.interrupt = nil
 
 		end
 		
-		print("Connection closed: " .. tostring(self.instance.message))
+		print("Connection closed: " .. tostring(self.message))
 		self.trigger:signal() -- Notify pending interrupt routines
 		if cqcond.type(notify) == "condition" then
 			notify:signal()
@@ -183,7 +203,14 @@ function api:close(timeout)
 		-- Run the handler, overriding any existing interrupts
 		local handler = self.transitions["_CLOSE"]
 		local status, ret = pcall(handler, self, self.instance)
-		self.interrupt = status and ret or self.interrupt
+		if not status then
+			self.message = "Manual shutdown"
+			self:shutdown()
+			return
+		end
+
+		self.interrupt = self.interrupt or "END"
+		self.trigger:signal() -- Changed transition, notify I/O
 
 		-- Loop the state machine until socket closed or timeout
 		local expiration = cqcore.monotime() + timeout + 0.01
@@ -199,6 +226,9 @@ end
 -- Close the socket immediately (wrapper for the internal API)
 function api:shutdown()
 	if not self.socket then return end
+	if not self.message then
+		self.message = "Completed without errors"
+	end
 
 	self.socket:shutdown("w")
 	self.socket = nil
@@ -206,41 +236,34 @@ end
 
 
 -- >> PROTCOL CHECKER: Optional "base" state machine <<
-local function _pcState()
-	return {
-		buffer = nil,
-		offset = 0,
-		protocol = nil,
-	}
-end
-
-local function _pcHandshake(conn, state)
+function _checkProtocol(conn, inst)
 	print("todo check handshake")
+	return "END"
 end
-
-local function _pcClose(conn, state)
-	print("todo close connection (during protocol check)")
-end
-
 
 -- >> MODULE API <<
 local module = {
 	new = _new,
+
 	server = {
 		transitions = function()
 			-- Protocol checker transition table 
 			local pctt = {
-				START = _pcHandshake,
-				END = _pcClose,
+				START = _checkProtocol,
 			}
 
-			setmetatable(pctt, { __index = function(tbl, key)
-				if not key then return nil end
-				return tbl["END"]
-			end })
+			-- setmetatable(pctt, { __index = function(tbl, key)
+			-- 		if not key then return nil end
+			-- 		return tbl["END"] end })
 				
 			return pctt end,
-		instance = _pcState,
+
+		instance = function()
+			return {
+				bytes = nil,
+				offset = 0,
+				protocol = nil,
+			} end,
 	},
 }
 

@@ -52,7 +52,6 @@ local function _newInstance(args)
 			headers = {},
 			body = "",
 		},
-		message = nil,
 	}
 
 	return obj
@@ -131,7 +130,7 @@ local function parseRequest(conn, inst)
 		if header then
 			-- Error bad request if nil value or header has whitespace before colon
 			if not value or header:match(".-[%s]$") then
-				inst.message = "Invalid header: '" .. tostring(header) .. "' -> '" .. tostring(value) .. "'"
+				conn.message = "Invalid header: '" .. tostring(header) .. "' -> '" .. tostring(value) .. "'"
 				return "RES"
 			end
 			inst.request.headers[header] = value
@@ -152,14 +151,14 @@ local function processRequest(conn, inst)
 	if inst.request.method == "POST" then
 		if not conn.commands then
 			-- Server is not accepting POST
-			inst.message = "Server commands not implemented"
+			conn.message = "Server commands not implemented"
 			return "RES"
 		end
 
 		-- We may expect a body
 		local length = tonumber(inst.request.headers["Content-Length"] or 0)
 		if length < 0 then
-			inst.message = "Invalid content length"
+			conn.message = "Invalid content length"
 			return "RES"
 
 		elseif length == 0 then inst.request.body = ""
@@ -174,7 +173,7 @@ local function processRequest(conn, inst)
 		-- Process the command
 		local command = inst.request.headers["Command"]
 		if not command then
-			inst.message = "Request absent 'Command' header"
+			conn.message = "Request absent 'Command' header"
 			return "RES" 
 		end
 		
@@ -209,7 +208,7 @@ local function processRequest(conn, inst)
 	-- No content if server does not have a serve directory
 	if not inst.path then
 		inst.response.status = 204
-		inst.message = "No serve directory specified"
+		conn.message = "No serve directory specified"
 		return "RES"
 	end
 
@@ -266,7 +265,7 @@ local function processRequest(conn, inst)
 
 	if not inst.response.body then
 		inst.response.status = 500
-		inst.message = "Attemped to serve nil body"
+		conn.message = "Attemped to serve nil body"
 		return "RES"
 	end
 
@@ -307,34 +306,24 @@ local function resolveRequest(conn, inst)
 	return "END"
 end
 
-local function closeConnection(conn, inst)
-	if not inst.message then
-		inst.message = "Completed without errors"
-	end
-
-	conn:shutdown()
-	return nil
-end
+-- local function closeConnection(conn, inst)
+-- 	conn:shutdown()
+-- 	return nil
+-- end
 
 
 -- >> INTERRUPTS <<
 
 -- Checks for connection state and sets a new target
 local function handleTimeout(conn, inst)
-	inst.message = "Connection timed out"
-
-	conn.expiration = nil
+	conn.message = "Connection timed out (handler)"
 	conn.interrupt = "END"
-	conn.trigger:signal() -- Send timeout to I/O
 end
 
 -- Close the connection gracefully
 local function handleClose(conn, inst)
-	inst.message = "Connection shutdown"
-
-	conn.expiration = nil
+	conn.message = "Manual shutdown (handler)"
 	conn.interrupt = "END"
-	conn.trigger:signal() -- Send timeout to I/O
 end
 
 
@@ -344,7 +333,7 @@ local http = {
 	NEW = parseRequest,		-- Request parsing
 	CMD = processRequest,	-- Server-side processing
 	RES = resolveRequest,	-- Send server response
-	END = closeConnection,
+	-- END = closeConnection, -- This can override the end transition
 
 	-- Interrupt routines
 	_TIMEOUT = handleTimeout,
@@ -360,7 +349,8 @@ setmetatable(http, { __index = function(tbl, key)
 		return tbl["NEW"]
 	end
 	
-	return tbl["END"]
+	-- return tbl["END"]
+	return nil
 end })
 
 
