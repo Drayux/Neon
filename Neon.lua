@@ -40,11 +40,13 @@ function server:loop()
 
 			-- Add an HTTP state machine to the connection
 			local args = {
-				path = self.rootdir,
-				commands = nil,
+				http = {
+					path = self.rootdir,
+					commands = nil,
+				},
 			}
 
-			conn:run(http, args, self.trigger)
+			conn:run("http", args, self.trigger)
 			cqcore.poll() -- Init the connection before accepting another
 		end
 

@@ -1,5 +1,6 @@
 -- >>> http.lua: HTTP server state machine for connection objects
 
+local time = require("cqueues").monotime
 local codes = {
 	-- Information
 	_100 = "CONTINUE",
@@ -36,13 +37,15 @@ local codes = {
 -- >> STATE OBJECT <<
 local function _newInstance(args)
 	if not args then args = {} end
-	local obj = {
+	local inst = {
 		protocol = nil,
 		version = nil,
+		persistent = false,
+		upgrade = nil,
 		path = args.path,
 		commands = args.commands,
 		request = {
-			method = nil,
+		method = nil,
 			endpoint = nil,
 			headers = nil,
 			body = nil,
@@ -54,7 +57,7 @@ local function _newInstance(args)
 		},
 	}
 
-	return obj
+	return inst
 end
 
 
@@ -108,6 +111,8 @@ local function parseRequest(conn, inst)
 	-- NOTE: Match only '\n' as xread is set to CRLF -> LF conversion mode
 	local timeout = conn:receive("*L")
 	if timeout then return nil end
+	-- print("buffer: '" .. tostring(conn.buffer) .. "'")
+	
 	local m, e, v = conn.buffer:match("^(%w+) (%S+) HTTP/(1%.[01])\n$")
 
 	-- Clients can begin a request with an empty line
@@ -182,28 +187,44 @@ local function processRequest(conn, inst)
 		return "RES"
 	end 
 
-	-- Check for websocket upgrade
-	local upgrade = inst.request.headers["Connection"] == "upgrade"
-	local protocols = inst.request.headers["Upgrade"]
-	
-	if upgrade and protocols then
-		-- Right now we are checking only for websocket
-		local version = nil
-		for entry in protocols:gmatch("([^/%s]%S+)%s?") do
-			local p, v = entry:match("^([^/]+)/*(.-)$")
-			if p == "websocket" then
-				version = v
-				goto breakupgrade
+	-- Upgrade connection only with GET requests
+	if inst.request.method == "GET" then
+		-- Parse request connection headers
+		local connection = inst.request.headers["Connection"]
+		local protocols = inst.request.headers["Upgrade"]
+		
+		local upgrade = false
+		if connection then
+			for option in (connection .. ","):gmatch("([^,]-)%s*,%s*") do
+				if option == "Upgrade" then upgrade = true
+				elseif option == "keep-alive" then inst.persistent = true
+				end
 			end
-		end ::breakupgrade::
+		end
+		
+		if upgrade and protocols then
+			-- Right now we are checking only for websocket
+			local version = nil
+			for entry in protocols:gmatch("([^/%s]%S+)%s?") do
+				local p, v = entry:match("^([^/]+)/*(.-)$")
+				if p == "websocket" then
+					version = v
+					goto breakupgrade
+				end
+			end ::breakupgrade::
 
-		-- Server should continue normal operation on the old protocol if absent
-		if version then
-			print("try to upgrade websocket")
-
-			return "APP"
+			-- Server should continue normal operation on the old protocol if absent
+			if version then
+				inst.upgrade = "websocket"
+				inst.response.status = 101
+				-- TODO: Websocket upgrade headers
+				return "RES"
+			end
 		end
 	end
+
+	-- TODO: Check for other method types and set status to 501 or 400
+	-- The following is for GET requests (TODO: below also checks for HEAD)
 
 	-- No content if server does not have a serve directory
 	if not inst.path then
@@ -273,7 +294,6 @@ local function processRequest(conn, inst)
 	headertbl["Content-Type"] = "text/html"
 	headertbl["Content-Length"] = tostring(#inst.response.body)
 
-	-- TODO: Check for other method types and set status to 501 or 400
 	return "RES"
 end
 
@@ -303,6 +323,14 @@ local function resolveRequest(conn, inst)
 	local timeout = conn:send() -- Send the buffer all at once
 	if timeout then return nil end
 	
+	-- Connection "keep-alive"
+	-- TODO: Consider adding option if this should be respected
+	if inst.persistent and conn.expiration then
+		conn.expiration = time() + conn.lifetime
+		inst.persistent = false
+		return "NEW"
+	end
+
 	return "END"
 end
 
@@ -356,8 +384,8 @@ end })
 
 -- >> MODULE API <<
 local module = {
-	transitions = function() return http end,
 	instance = _newInstance,
+	transitions = function() return http end,
 }
 return module
 
