@@ -189,6 +189,19 @@ function api:run(module, args, notify)
 	end)
 end
 
+-- Run the connection DATA routine (if available)
+function api:data(...)
+	if not self.socket then return end
+
+	-- TODO: We may wish to wait until interrupts are resolved
+	-- (use cqcore.poll(0) so we can resume right away)
+
+	local routine = self.transitions["_DATA"]
+	local status, ret = pcall(routine, self, self.instance, ...)
+
+	return ret
+end
+
 -- Check for connection timeout
 function api:timeout()
 	-- Connection has infinite lifetime

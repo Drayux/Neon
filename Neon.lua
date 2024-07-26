@@ -6,18 +6,6 @@ local cqsgnl = require("cqueues.signal")
 local connection = require("lib.connection")
 local util = require("lib.util")
 
--- local teststr = "\129\32hello world how are you today?"
--- local teststr = "\129\127\0\0\0\32"
--- local len, header = util.wsheader(teststr)
--- print("remaining: " .. len)
--- if header then
--- 	print()
--- 	print("final: " .. tostring(header.final))
--- 	print(string.format("opcode: %02x", header.opcode))
--- 	print("length: " .. tostring(header.length))
--- 	print(string.format("mask: %08x", header.mask))
--- end
--- if true then return end
 
 local controller = cqcore.new()
 local server = {
@@ -68,6 +56,7 @@ end
 function server:stop()
 	if not self.running then return end
 	for idx, conn in ipairs(self.connections) do
+		-- if conn.status == "WEBSOCKET" then conn:data("closing!") end
 		conn:close(self.timeout)
 	end
 

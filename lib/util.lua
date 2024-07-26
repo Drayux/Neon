@@ -79,7 +79,9 @@ end
 -- >	-- do something with bytes 3 -> the rest
 -- > end
 function module.bytes(s)
-	assert(type(s) == "string", "Bytes iterator requires a string as input")
+	-- assert(type(s) == "string", "Bytes iterator requires a string as input")
+	if type(s) ~= "string" then return function() return nil, nil end end
+
 	local i = 1
 	local f = function(start)
 		if start and start > 0 then i = start end
@@ -236,87 +238,6 @@ function module.encode(bytearr)
 	table.insert(output, string.rep("=", (3 - extra) % 3))
 
 	return table.concat(output)
-end
-
--- Parse the header of a websocket frame
--- Returns the number of bytes remaining for the header to be valid and nil
--- or the length of the header (in bytes) and a table that represents it
--- https://www.rfc-editor.org/rfc/rfc6455#section-5.2
-function module.wsheader(data)
-	if not type(data) == "string" then return 2, nil end
-	if #data < 2 then return 2 - #data, nil end
-
-	local len = 0
-	local byte = nil
-	local valid = 2
-	local next = module.bytes(data)
-
-	-- Read the first two bytes
-	_, byte = next()
-	local final = (byte & 0x80) > 0
-	local rsv = { (byte & 0x40) > 0, (byte & 0x20) > 0, (byte & 0x10) > 0 }
-	local opcode = byte & 0x0F
-
-	len, byte = next()
-	local maskbit = (byte & 0x80) > 0
-	local payloadlen = byte & 0x7F
-
-	-- Check variable header length components
-	if payloadlen == 126 then valid = valid + 2
-	elseif payloadlen == 127 then valid = valid + 8 end
-	if maskbit then valid = valid + 4 end
-
-	-- Header may or may not have enough data to be valid at this point
-	if #data < valid then return valid - #data, nil end
-
-	-- Check for extended payload length
-	-- Network byte order is big-endian
-	local extlen = nil
-	if payloadlen == 126 then
-		_, msb = next()
-		len, lsb = next()
-
-		extlen = (msb << 8) | lsb
-	elseif payloadlen == 127 then
-		extlen = 0
-		for i = 1, 8 do
-			len, byte = next()
-			extlen = (extlen << 8) | byte
-		end
-	end
-
-	-- Check for payload mask
-	local mask = nil
-	if maskbit then
-		mask = 0
-		for i = 1, 4 do 
-			len, byte = next()
-			mask = (mask << 8) | byte
-		end
-	end
-	
-	-- Build the header table
-	local header = {
-		final = final,
-		rsv = rsv,
-		opcode = opcode,
-		length = extlen or payloadlen,
-		mask = mask,
-	}
-
-	return len - 1, header
-end
-
--- Apply the websocket masking/unmasking algorithm
--- https://www.rfc-editor.org/rfc/rfc6455#section-5.3
-function module.wsmask(mask, payload)
-	local transformed = {}
-	for idx, byte in module.bytes(payload) do
-		local j = (idx - 2) % 4
-		local key = mask >> ((3 - j) * 8)
-		table.insert(transformed, string.char(byte ~ key & 0xFF))
-	end
-	return table.concat(transformed)
 end
 
 -- Attempt to find the working directory of the script 
