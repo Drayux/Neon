@@ -1,6 +1,7 @@
 -- >>> http.lua: HTTP server state machine for connection objects
 
 local time = require("cqueues").monotime
+local util = require("lib.util")
 local codes = {
 	-- Information
 	_100 = "CONTINUE",
@@ -97,6 +98,16 @@ local function _openFile(path, ext)
 	end
 end
 
+-- Generates the key necessary for Sec-WebSocket-Accept in the server response handshake
+local function _wsGenerateAccept(key)
+	if not key or key == "" then return nil end
+
+	-- Pre-hash key
+	-- TODO: Ensure that the input key has all padding spaces removed
+	local accept = key .. "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	local hashed = util.hash(accept)
+	return util.encode(hashed)
+end
 
 -- >> TRANSITIONS <<
 
@@ -109,7 +120,7 @@ local function parseRequest(conn, inst)
 	-- Parse start line
 	-- Assume TLS is accounted for (TODO: for now client should only request HTTP unsecure)
 	-- NOTE: Match only '\n' as xread is set to CRLF -> LF conversion mode
-	local timeout = conn:receive("*L")
+	local timeout = conn:read("*L")
 	if timeout then return nil end
 	-- print("buffer: '" .. tostring(conn.buffer) .. "'")
 	
@@ -125,10 +136,12 @@ local function parseRequest(conn, inst)
 	inst.version = v
 
 	-- Parse request headers
+	-- TODO: Better header handling (some can/cannot have multiple lines, various formats, etc)
+	-- ^^Each header should probably be matched to a rule (function) which validates that header specifically
 	inst.request.headers = {}
 	local header, value = nil, nil
 	repeat 
-		timeout = conn:receive("*l")
+		timeout = conn:read("*l")
 		if timeout then return nil end
 		header, value = conn.buffer:match("^([^:]+):[ \t]*(.-)[ \t]*$")
 
@@ -168,7 +181,7 @@ local function processRequest(conn, inst)
 
 		elseif length == 0 then inst.request.body = ""
 		else
-			timeout = conn:receive("-" .. length)
+			timeout = conn:read("-" .. length)
 			if timeout then return nil end
 			inst.request.body = conn.buffer
 		end
@@ -214,10 +227,15 @@ local function processRequest(conn, inst)
 			end ::breakupgrade::
 
 			-- Server should continue normal operation on the old protocol if absent
-			if version then
+			local wsaccept = _wsGenerateAccept(inst.request.headers["Sec-WebSocket-Key"])
+			if wsaccept and version then
 				inst.upgrade = "websocket"
 				inst.response.status = 101
-				-- TODO: Websocket upgrade headers
+
+				inst.response.headers["Connection"] = "Upgrade"
+				inst.response.headers["Upgrade"] = "websocket"
+				inst.response.headers["Sec-WebSocket-Accept"] = wsaccept
+
 				return "RES"
 			end
 		end
@@ -280,7 +298,7 @@ local function processRequest(conn, inst)
 
 	-- Read the file and deliver it to the client
 	-- TODO: Body chunking
-	-- state.response.body = "<!DOCTYPE html><html><body><h1>hello world</h1></body></html>"
+	-- inst.response.body = "<!DOCTYPE html><html><body><h1>hello world</h1></body></html>"
 	inst.response.body = file:read("*a")
 	file:close()
 
@@ -323,6 +341,11 @@ local function resolveRequest(conn, inst)
 	local timeout = conn:send() -- Send the buffer all at once
 	if timeout then return nil end
 	
+	-- Websocket upgrade
+	if inst.upgrade == "websocket" then
+		conn:swap("websocket", "START")
+	end
+
 	-- Connection "keep-alive"
 	-- TODO: Consider adding option if this should be respected
 	if inst.persistent and conn.expiration then

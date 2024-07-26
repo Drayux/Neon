@@ -7,6 +7,7 @@
 
 		// Connection opened
 		socket.addEventListener("open", (event) => {
+		  console.log("Sending message to server...");
 		  socket.send("Hello Server!");
 		});
 

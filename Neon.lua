@@ -4,9 +4,20 @@ local cqsock = require("cqueues.socket")
 local cqsgnl = require("cqueues.signal")
 
 local connection = require("lib.connection")
-local http = require("lib.http")
 local util = require("lib.util")
 
+-- local teststr = "\129\32hello world how are you today?"
+-- local teststr = "\129\127\0\0\0\32"
+-- local len, header = util.wsheader(teststr)
+-- print("remaining: " .. len)
+-- if header then
+-- 	print()
+-- 	print("final: " .. tostring(header.final))
+-- 	print(string.format("opcode: %02x", header.opcode))
+-- 	print("length: " .. tostring(header.length))
+-- 	print(string.format("mask: %08x", header.mask))
+-- end
+-- if true then return end
 
 local controller = cqcore.new()
 local server = {
@@ -18,6 +29,7 @@ local server = {
 	-- These will become script arguments (also the port and various integrations)
 	timeout = 10,
 	rootdir = util.getcwd() .. "/pages",
+	logging = false,
 }
 
 function server:loop()
@@ -28,7 +40,7 @@ function server:loop()
 
 		local sock = self.socket:accept(0)
 		if sock == nil then
-			print("Nothing to accept")
+			if self.logging then print("~ Nothing to accept ~\n") end
 			cqcore.poll(self.socket, self.trigger)
 		
 		else
@@ -36,7 +48,7 @@ function server:loop()
 
 			-- TODO: Add connection limit and remove completed instances
 			table.insert(self.connections, conn)
-			print("New connection: " .. #self.connections)
+			conn.num = self.logging and #self.connections or nil
 
 			-- Add an HTTP state machine to the connection
 			local args = {
@@ -77,7 +89,6 @@ controller:wrap(function()
 	server:stop()
 end)
 
-print("Starting queue controller")
 assert(controller:loop())
 print("Server shutdown successful")
 

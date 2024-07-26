@@ -22,7 +22,7 @@ end })
 
 -- Swap to a given protocol by name (if provided)
 local function initProtocol(conn, inst)
-	local swap = conn:swap(inst["init"], "START")
+	conn:swap(inst["init"], "START")
 	return "CHECK"
 end
 
