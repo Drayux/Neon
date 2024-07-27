@@ -21,7 +21,9 @@ local function _newInstance(args)
 		_pending = false,
 		_frame = nil,
 
-		client = args.client, -- Is this a websocket client or server
+		pong = true,				-- Server has sent an unresolved ping (true if resolved/false if pending)
+		client = args.client,		-- Is this a websocket client or server
+		interval = args.interval,	-- Interval between ping events to the client
 	}
 
 	return inst
@@ -141,8 +143,10 @@ function _formatFrame(opcode, mask, payload)
 	-- TODO: Generate a masking key
 	local key = nil
 	if mask and len > 0 then
-		print("todo generate mask")
-		key = 0x1234
+		key = (math.random(0, 255) << 24)
+			| (math.random(0, 255) << 16)
+			| (math.random(0, 255) <<  8)
+			|  math.random(0, 255)
 	end
 	payload = _applyMask(key, payload)
 
@@ -188,7 +192,10 @@ local function listenFrame(conn, inst)
 
 	-- Begin a new frame
 	inst._pending = true
-	inst._frame = ""
+	inst._frame = {
+		header = nil,
+		payload = "",
+	}
 
 	return "FRAME"
 end
@@ -211,6 +218,8 @@ local function readFrame(conn, inst)
 	end
 
 	-- TODO: Validate the newly received frame
+	-- ...
+	inst._frame.header = header
 	
 	-- Calculate the number of bytes left to read
 	buf = buf:sub(len + 1)
@@ -222,7 +231,7 @@ local function readFrame(conn, inst)
 	buf = buf .. conn.buffer
 	payload = _applyMask(header.mask, buf)
 
-	inst._frame = inst._frame .. payload
+	inst._frame.payload = inst._frame.payload .. payload
 	if header.final then
 		inst._pending = false
 		return "RES"
@@ -231,17 +240,42 @@ local function readFrame(conn, inst)
 	return "READY"
 end
 
+-- Send a pong frame to the client
+local function pingClient(conn, inst)
+	print("debug: sending ping (243)")
+	local timeout = sendFrame(conn, inst, nil, "PING")
+	if timeout then return nil end
+
+	inst.pong = false
+	conn.expiration = util.time() + conn.lifetime
+	return "FRAME"
+end
+
 -- Perform operation depending on frame data
 local function resolveFrame(conn, inst)
-	print(inst._frame)
-	inst._frame = nil
+	if inst._frame.header["opcode"] == 0x0A then
+		print("debug: pong received (255)")
+		conn.expiration = util.time() + (inst.interval or conn.lifetime)
+		inst.pong = true
 
+	elseif inst._frame.header["opcode"] == 0x09 then
+		print("debug: ping received (260)")
+		local timeout = sendFrame(conn, inst, nil, "PONG")
+		if timeout then return nil end
+
+	else print(inst._frame.payload)
+	end
+
+	inst._frame = nil
 	return "READY"
 end
 
 -- Send the client a final closing frame
 local function finalFrame(conn, inst)
-	local timeout = sendFrame(conn, inst, "And then there was only darkness.", "CLOSE")
+	conn.expiration = util.time() + conn.lifetime
+
+	local message = conn.message or "~ And then there was only darkness. ~"
+	local timeout = sendFrame(conn, inst, message, "CLOSE")
 	if timeout then return nil end
 	
 	return "END"
@@ -252,15 +286,38 @@ end
 
 -- Websocket is due to hear from the connected client
 local function handleTimeout(conn, inst)
+	-- Just received a frame, delay timeout routine
+	if conn.state == "RES" then return end
+
+	local running = (conn.state == "READY") or (conn.state == "FRAME")
+	if running then
+		-- If no pong, then client has probably disconnected
+		if not inst.pong then
+			conn.message = "No pong from client"
+			conn.interrupt = "CLOSE"
+			
+		else conn.interrupt = "PING"
+		end
+
+		return
+	end
+
 	conn.message = "Websocket timeout"
-	conn.interrupt = "END"
+
+	-- Something hung at the init/close step
+	if conn.state == "INIT" or conn.state == "CLOSE" then
+		conn.interrupt = "END"
+		return
+	end
+
+	conn.interrupt = "CLOSE"
 end
 
 -- Close the websocket gracefully (with the proper handshake)
 local function handleClose(conn, inst)
 	conn.message = "Websocket close"
 
-	local running = conn.state == "READY" or conn.state == "FRAME" or conn.state == "RES"
+	local running = (conn.state == "READY") or (conn.state == "FRAME") or (conn.state == "RES")
 
 	if running then conn.interrupt = "CLOSE"
 	else conn.interrupt = "END"
@@ -273,6 +330,7 @@ local websocket = {
 	INIT = initFrame,
 	READY = listenFrame,
 	FRAME = readFrame,
+	PING = pingClient,
 	RES = resolveFrame,
 	CLOSE = finalFrame,
 

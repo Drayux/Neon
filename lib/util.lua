@@ -1,6 +1,6 @@
 -- >>> util.lua: Connection utility functions
 
-local module = {}
+local module = { time = require("cqueues").monotime }
 
 -- Splits a uint32 into four bytes (big endian output)
 -- Taken directly from: https://github.com/mpeterv/sha1/blob/master/src/sha1/common.lua
@@ -92,6 +92,20 @@ function module.bytes(s)
 		if b then return i, b end
 	end
 	return f, nil, 0
+end
+
+
+-- Seed the RNG from /dev/random
+function module.seed()
+	local rand = io.open("/dev/random", "rb")
+	local seed = 0
+
+	for i = 1, 8 do
+		seed = (seed << 8) | string.byte(rand:read(1))
+	end
+
+	math.randomseed(seed)
+	rand:close()
 end
 
 -- Generate a SHA-1 hash of a provided string

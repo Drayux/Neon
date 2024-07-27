@@ -18,9 +18,16 @@ local server = {
 	timeout = 10,
 	rootdir = util.getcwd() .. "/pages",
 	logging = false,
+
+	--
+	seed = util.seed, -- Function to seed the RNG
+	-- seed = function() return 69420 end,
 }
 
 function server:loop()
+	-- Init the RNG
+	if server.seed then server.seed() end
+
 	self.running = true
 	while self.running do
 
@@ -43,6 +50,9 @@ function server:loop()
 				http = {
 					path = self.rootdir,
 					commands = nil,
+				},
+				websocket = {
+					interval = 120, -- Two minutes
 				},
 			}
 

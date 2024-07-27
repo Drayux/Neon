@@ -1,6 +1,5 @@
 -- >>> http.lua: HTTP server state machine for connection objects
 
-local time = require("cqueues").monotime
 local util = require("lib.util")
 local codes = {
 	-- Information
@@ -349,7 +348,7 @@ local function resolveRequest(conn, inst)
 	-- Connection "keep-alive"
 	-- TODO: Consider adding option if this should be respected
 	if inst.persistent and conn.expiration then
-		conn.expiration = time() + conn.lifetime
+		conn.expiration = util.time() + conn.lifetime
 		inst.persistent = false
 		return "NEW"
 	end

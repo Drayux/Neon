@@ -3,7 +3,12 @@
 local function load(name)
 	local status, ret = pcall(require, "lib." .. name)
 
-	if ret and not ret.instance and not ret.transitions then return nil end
+	if type(ret) == "string" then
+		print(ret)
+		return nil
+	end
+
+	if ret and (not ret.instance or not ret.transitions) then return nil end
 	return ret
 end
 
