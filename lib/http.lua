@@ -45,7 +45,7 @@ local function _newInstance(args)
 		path = args.path,
 		commands = args.commands,
 		request = {
-		method = nil,
+			method = nil,
 			endpoint = nil,
 			headers = nil,
 			body = nil,
@@ -110,12 +110,12 @@ end
 
 -- >> TRANSITIONS <<
 
-local function handleTLS(conn, inst)
+local function initProtocol(conn, inst)
 	print("TODO: upgrade/downgrade TLS")
-	return "NEW"
+	return "READ"
 end
 
-local function parseRequest(conn, inst)
+local function parseMessage(conn, inst)
 	-- Parse start line
 	-- Assume TLS is accounted for (TODO: for now client should only request HTTP unsecure)
 	-- NOTE: Match only '\n' as xread is set to CRLF -> LF conversion mode
@@ -126,7 +126,7 @@ local function parseRequest(conn, inst)
 	local m, e, v = conn.buffer:match("^(%w+) (%S+) HTTP/(1%.[01])\n$")
 
 	-- Clients can begin a request with an empty line
-	if not m then return "NEW" end
+	if not m then return "READ" end
 
 	-- TODO: Additional request validation checks
 
@@ -350,7 +350,7 @@ local function resolveRequest(conn, inst)
 	if inst.persistent and conn.expiration then
 		conn.expiration = util.time() + conn.lifetime
 		inst.persistent = false
-		return "NEW"
+		return "READ"
 	end
 
 	return "END"
@@ -379,8 +379,8 @@ end
 
 -- >> TRANSITION TABLE <<
 local http = {
-	INIT = handleTLS,		-- TLS step
-	NEW = parseRequest,		-- Request parsing
+	INIT = initProtocol,	-- Client/server disambiguation (+TLS negotiation)
+	READ = parseMessage,	-- Request parsing
 	CMD = processRequest,	-- Server-side processing
 	RES = resolveRequest,	-- Send server response
 	-- END = closeConnection, -- This can override the end transition
@@ -396,7 +396,7 @@ setmetatable(http, { __index = function(tbl, key)
 
 	if key == "START" then
 		-- Overrides "INIT" pending TLS support
-		return tbl["NEW"]
+		return tbl["INIT"]
 	end
 	
 	-- return tbl["END"]
