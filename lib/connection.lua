@@ -111,7 +111,7 @@ function api:swap(name, interrupt)
 	local _, ttbl = pcall(module.transitions)
 
 	-- Don't swap if module is invalid/doesn't exist
-	if not inst and not ttbl then return false end
+	if not inst or not ttbl then return false end
 	
 	self.instance = inst
 	self.transitions = ttbl
@@ -124,19 +124,19 @@ function api:swap(name, interrupt)
 end
 
 -- Run the connection state machine
--- Module is the name of the protocol (state machine) that should be used
+-- Machine is the name of the protocol (state machine) that should be used
 -- Args should be a table of optional state machine-specific parameters
 -- Notify is an optional cqueues.condition that will be signaled when the state machine exits
-function api:run(module, args, notify)
+function api:run(machine, args, notify)
 	-- A state machine won't work without a state and transitions
 	self._args = args
 	self.instance = protocol.instance(args)
 	self.transitions = protocol.transitions()
 	self.state = "START"
 
-	-- Try to detect protocol if no module specified (assume server)
-	if module and type(module) == "string" then
-		self.instance["init"] = module
+	-- TODO: Try to detect protocol if no module specified (assume server)
+	if machine and type(machine) == "string" then
+		self.instance["init"] = machine
 	end
 
 	-- (Soft) timeout routine

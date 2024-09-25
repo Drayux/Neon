@@ -12,17 +12,25 @@ local server = {
 	socket = cqsock.listen("127.0.0.1", 1085),
 	trigger = cqcond.new(),
 	running = false,
-	connections = {},
+	connections = {}, -- Only those where the host operates as a server
 
-	-- These will become script arguments (also the port and various integrations)
+	-- These will become script arguments (TODO: port and various integrations)
 	timeout = 10,
 	rootdir = util.getcwd() .. "/pages",
-	logging = false,
+	logging = true,
 
 	--
 	seed = util.seed, -- Function to seed the RNG
 	-- seed = function() return 69420 end,
 }
+
+-- Run an integration module as a client (TODO)
+-- (aka a websocket client to twitch's API....usually)
+function server:module(mod)
+	assert(false, "TODO: server:module - modules should have a consistent format"
+		.. " such that regardless of being a one-shot or loop, the parent server"
+		.. " can retrieve the necessary data. (Likely to be a function callback.)")
+end
 
 function server:loop()
 	-- Init the RNG
@@ -45,7 +53,7 @@ function server:loop()
 			table.insert(self.connections, conn)
 			conn.num = self.logging and #self.connections or nil
 
-			-- Add an HTTP state machine to the connection
+			-- Args specify functionality for 'guest -> host' data
 			local args = {
 				http = {
 					path = self.rootdir,
@@ -62,6 +70,9 @@ function server:loop()
 
 	end
 end
+
+-- TODO: Likely to need a function for notifying websockets (where host is the server)
+--	of the data received from the API integrations....likely to be passed via a "state machine arg"
 
 function server:stop()
 	if not self.running then return end
