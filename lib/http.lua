@@ -39,6 +39,7 @@ local _codes = {
 -- Header-specific parsing
 local _headers = {
 	-- Standardized Common
+	-- TODO: Each header instead returns a table that contains the "proper capitalization", parsing function, and the creation (for client req mostly) function
 	["accept"] = nil,
 	["connection"] = nil,
 	["content-length"] = function(data, content)
@@ -338,48 +339,6 @@ local function receive(conn, inst)
 	return "PROC"
 end
 
--- local function receiveRequest(conn, inst) -- old implementation
--- 	-- Parse start line
--- 	-- Assume TLS is accounted for (TODO: for now client should only request HTTP unsecure)
--- 	-- NOTE: Match only '\n' as xread is set to CRLF -> LF conversion mode
--- 	local timeout = conn:read("*L")
--- 	if timeout then return nil end
--- 	-- print("buffer: '" .. tostring(conn.buffer) .. "'")
---
--- 	local m, e, v = conn.buffer:match("^(%w+) (%S+) HTTP/(1%.[01])\n$")
---
--- 	-- Clients can begin a request with an empty line
--- 	if not m then return "RECV" end
---
--- 	-- TODO: Additional request validation checks
---
--- 	inst.request.method = m
--- 	inst.request.endpoint = e
--- 	inst.version = v
---
--- 	-- Parse request headers
--- 	-- TODO: Better header handling (some can/cannot have multiple lines, various formats, etc)
--- 	-- ^^Each header should probably be matched to a rule (function) which validates that header specifically
--- 	inst.request.headers = {}
--- 	local header, value = nil, nil
--- 	repeat 
--- 		timeout = conn:read("*l")
--- 		if timeout then return nil end
--- 		header, value = conn.buffer:match("^([^:]+):[ \t]*(.-)[ \t]*$")
---
--- 		if header then
--- 			-- Error bad request if nil value or header has whitespace before colon
--- 			if not value or header:match(".-[%s]$") then
--- 				conn.message = "Invalid header: '" .. tostring(header) .. "' -> '" .. tostring(value) .. "'"
--- 				return "SEND"
--- 			end
--- 			inst.request.headers[header] = value
--- 		end
--- 	until (header == nil)
---
--- 	return "CMD"
--- end
-
 local function process(conn, inst)
 	-- TODO: Should we assume that this was called from a valid state?
 	-- AKA: inst.content needs to be a table or this will fail
@@ -393,6 +352,7 @@ local function process(conn, inst)
 		-- The first line of an HTTP request may be empty
 		-- TODO: Verify if a request should be considered invalid if more than one empty line preceeds it
 		if not _req then return "RECV" end
+		print(_req)
 
 		local matchstr =
 			inst.server and "^(%w+) (%S+) HTTP/(1%.[01])$"
@@ -605,163 +565,6 @@ local function command(conn, inst)
 	return "SEND"
 end
 
--- Upgrade connection, process command, or send file
--- GET -> Send the requested file
--- HEAD -> Stat the requested file
--- POST -> Process a command
--- local function processRequest(conn, inst)
--- 	local timeout = nil
---
--- 	-- Handle server/OBS-frontend commands
--- 	if inst.request.method == "POST" then
--- 		if not conn.commands then
--- 			-- Server is not accepting POST
--- 			conn.message = "Server commands not implemented"
--- 			return "SEND"
--- 		end
---
--- 		-- We may expect a body
--- 		local length = tonumber(inst.request.headers["Content-Length"] or 0)
--- 		if length < 0 then
--- 			conn.message = "Invalid content length"
--- 			return "SEND"
---
--- 		elseif length == 0 then inst.request.body = ""
--- 		else
--- 			timeout = conn:read("-" .. length)
--- 			if timeout then return nil end
--- 			inst.request.body = conn.buffer
--- 		end
---
--- 		-- TODO: Process the body (if necessary)
---
--- 		-- Process the command
--- 		local command = inst.request.headers["Command"]
--- 		if not command then
--- 			conn.message = "Request absent 'Command' header"
--- 			return "SEND" 
--- 		end
---
--- 		-- TODO: processCommand() returns success message/body
---
--- 		return "SEND"
--- 	end 
---
--- 	-- Upgrade connection only with GET requests
--- 	if inst.request.method == "GET" then
--- 		-- Parse request connection headers
--- 		local connection = inst.request.headers["Connection"]
--- 		local protocols = inst.request.headers["Upgrade"]
---
--- 		local upgrade = false
--- 		if connection then
--- 			for option in (connection .. ","):gmatch("([^,]-)%s*,%s*") do
--- 				if option == "Upgrade" then upgrade = true
--- 				elseif option == "keep-alive" then inst.persistent = true
--- 				end
--- 			end
--- 		end
---
--- 		if upgrade and protocols then
--- 			-- Right now we are checking only for websocket
--- 			local version = nil
--- 			for entry in protocols:gmatch("([^/%s]%S+)%s?") do
--- 				local p, v = entry:match("^([^/]+)/*(.-)$")
--- 				if p == "websocket" then
--- 					version = v
--- 					goto breakupgrade
--- 				end
--- 			end ::breakupgrade::
---
--- 			-- Server should continue normal operation on the old protocol if absent
--- 			local wsaccept = _wsGenerateAccept(inst.request.headers["Sec-WebSocket-Key"])
--- 			if wsaccept and version then
--- 				inst.upgrade = "websocket"
--- 				inst.response.status = 101
---
--- 				inst.response.headers["Connection"] = "Upgrade"
--- 				inst.response.headers["Upgrade"] = "websocket"
--- 				inst.response.headers["Sec-WebSocket-Accept"] = wsaccept
---
--- 				return "SEND"
--- 			end
--- 		end
--- 	end
---
--- 	-- TODO: Check for other method types and set status to 501 or 400
--- 	-- The following is for GET requests (TODO: below also checks for HEAD)
---
--- 	-- No content if server does not have a serve directory
--- 	if not inst.path then
--- 		inst.response.status = 204
--- 		conn.message = "No directory to serve"
--- 		return "SEND"
--- 	end
---
--- 	-- TODO: HTML escape code processing
--- 	local endpoint = inst.request.endpoint
--- 	endpoint = endpoint:gsub("/+", "/") -- Fixup duplicated '/'
--- 	endpoint = endpoint:match("^(/[%S]-)/?$") -- Requests may have trailing '/'
--- 	if not endpoint or (endpoint .. "/"):match("/../") then
--- 		-- Don't serve malformed or parent paths: bad request
--- 		return "SEND"
--- 	end
---
--- 	local name = endpoint:match("^.*/(.-)$")
--- 	local n, ext = name:match("(.+)%.(.-)$")
--- 	name = n or name
---
--- 	-- Filter for known extensions
--- 	ext = ext and (
--- 		ext:match("html") or
--- 		ext:match("js") or
--- 		ext:match("css") or
--- 		ext:match("png")
--- 	)
---
--- 	-- Open requested file
--- 	local file, type = _openFile(inst.path .. endpoint, not ext and "html" or nil)
--- 	if file then
--- 		-- File exists
--- 		inst.response.status = 200
--- 	else
--- 		if type == "DIR" then
--- 			-- Path exists, but there is no content available
--- 			-- TODO: This is where to implement directory indexing
--- 			inst.response.status = 204
--- 		else
--- 			-- Requested file does not exist
--- 			-- TODO: This is where to implement fancy error pages
--- 			inst.response.status = 404
--- 		end
--- 		return "SEND"
--- 	end
---
--- 	-- No need to read the file if we just want the head
--- 	if inst.request.method == "HEAD" then
--- 		file:close()
--- 		return "SEND"
--- 	end
---
--- 	-- Read the file and deliver it to the client
--- 	-- TODO: Body chunking
--- 	-- inst.response.body = "<!DOCTYPE html><html><body><h1>hello world</h1></body></html>"
--- 	inst.response.body = file:read("*a")
--- 	file:close()
---
--- 	if not inst.response.body then
--- 		inst.response.status = 500
--- 		conn.message = "Attemped to serve nil body"
--- 		return "SEND"
--- 	end
---
--- 	local headertbl = inst.response.headers
--- 	headertbl["Content-Type"] = "text/html"
--- 	headertbl["Content-Length"] = tostring(#inst.response.body)
---
--- 	return "SEND"
--- end
-
 local function resolve(conn, inst)
 	local newline = "\r\n"
 	local payload = {}
@@ -828,57 +631,21 @@ local function resolve(conn, inst)
 	return inst.server and "FIN" or "RECV"
 end
 
--- Sends response data to the client
--- TODO: Make sure this coroutine shuts down properly
--- TODO: HTTP respect keep-alive request
--- local function resolveRequest(conn, inst)
--- 	local newline = "\r\n"
---
--- 	-- Populate status line on the return buffer
--- 	local protocol = "HTTP/" .. tostring(inst.version or 1.0)
--- 	local code = tostring(inst.response.status or 400)
--- 	conn.buffer = protocol .. " " .. code .. " " .. _codes["_" .. code] .. newline
---
--- 	-- Build response headers
--- 	local headers = ""
--- 	for k, v in pairs(inst.response.headers) do
--- 		headers = headers .. k .. ": " .. v .. newline
--- 	end
--- 	conn.buffer = conn.buffer .. headers .. newline
---
--- 	-- Content body (if present)
--- 	if inst.response.body and (#inst.response.body > 0) then 
--- 		conn.buffer = conn.buffer .. inst.response.body .. newline
--- 	end
---
--- 	local timeout = conn:send() -- Send the buffer all at once
--- 	if timeout then return nil end
---
--- 	-- Websocket upgrade
--- 	if inst.upgrade == "websocket" then
--- 		conn:swap("websocket", "START")
--- 	end
---
--- 	-- Connection "keep-alive"
--- 	-- TODO: Consider adding option if this should be respected
--- 	if inst.persistent and conn.expiration then
--- 		conn.expiration = util.time() + conn.lifetime
--- 		inst.persistent = false
--- 		return "RECV"
--- 	end
---
--- 	return "END"
--- end
-
 local function finalize(conn, inst)
+	local _req = tostring(inst.request.body)
+	print("body:")
+	print(_req)
+
 	-- Websocket upgrade
 	if inst.action == "upgrade" then
+		-- print("upgrading to websockterino!! (636)")
 		conn:swap("websocket", "START")
 		return nil
 	end
 
 	-- Connection "keep-alive"
 	-- TODO: Consider adding option if this should be respected
+	-- TODO: Check keep-alive header for requested expiration time
 	inst.persistent = inst.persistent or
 		(not inst.server) and _searchHeader(inst.request.headers, "connection", "keep-alive")
 	if inst.persistent and conn.expiration then

@@ -12,7 +12,7 @@ local function _new(s, c, t)
 	-- Type checks
 	assert(cqsock.type(s) == "socket")
 	assert(cqcore.type(c) == "controller")
-	local exp = t and (cqcore.monotime() + t) or nil
+	local exp = (t > 0) and (cqcore.monotime() + t) or nil
 
 	local obj = {
 		_args = nil,
@@ -141,7 +141,9 @@ function api:run(machine, args, notify)
 
 	-- (Soft) timeout routine
 	self.controller:wrap(function()
-		while self.socket do self:timeout() end
+		while self.socket do
+			if not self:timeout() then return end
+		end
 	end)
 
 	-- Test connection timeout during state transition
@@ -203,9 +205,10 @@ function api:data(...)
 end
 
 -- Check for connection timeout
+-- Returns true if routine should be called again (later)
 function api:timeout()
 	-- Connection has infinite lifetime
-	if not self.expiration then return end
+	if not self.expiration then return false end
 
 	-- The connection lifetime may have been extended
 	local timeout = self.expiration - cqcore.monotime() + 0.01 -- +10ms
@@ -224,7 +227,7 @@ function api:timeout()
 			-- No handler, close the connection
 			self.message = "Connection timed out"
 			self:shutdown()
-			return
+			return false
 
 		elseif self.interrupt then
 			-- Only signal timeout to I/O if normal flow should break
@@ -236,6 +239,7 @@ function api:timeout()
 	-- Handler should call self.trigger:notify() if necessary
 	::alive::
 	cqcore.poll(self.trigger, timeout)
+	return true
 end
 
 -- Close the connection, respecting its state
