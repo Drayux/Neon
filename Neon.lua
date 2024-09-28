@@ -31,7 +31,7 @@ function server:module(mod)
 	-- 	.. " such that regardless of being a one-shot or loop, the parent server"
 	-- 	.. " can retrieve the necessary data. (Likely to be a function callback.)")
 
-	local sock = cqsock.connect("www.google.com", 443)
+	local sock = cqsock.connect("drayux.com", 443)
 	sock:starttls()
 
 	local conn = connection.new(sock, controller, 0)

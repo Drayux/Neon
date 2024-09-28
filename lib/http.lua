@@ -37,6 +37,7 @@ local _codes = {
 }
 
 -- Header-specific parsing
+-- TODO: Move this to utils (so it can be used by modules seeking to create request headers)
 local _headers = {
 	-- Standardized Common
 	-- TODO: Each header instead returns a table that contains the "proper capitalization", parsing function, and the creation (for client req mostly) function
@@ -47,10 +48,10 @@ local _headers = {
 		if data then return false, data end
 		local _, length = pcall(tonumber, content)
 
-		if not length or length < 0 then return false, nil end
+		if (not length) or (length < 0) then return false, nil end
 		return true, length end,
 	["content-type"] = nil,
-	["host"] = nil,
+	["host"] = nil, -- TODO
 	["keep-alive"] = nil,
 	["sec-websocket-accept"] = function(data, content)
 		-- Single value only
@@ -98,6 +99,7 @@ local function _newInstance(args)
 
 	-- Clients will start with their request populated
 	-- TODO: Lowercase all request headers!
+	-- TODO: Consider using args.host as the client condition instead
 	local _request = nil
 	if args.method then
 		_request = {
@@ -116,6 +118,7 @@ local function _newInstance(args)
 		encryption = nil, -- "TLS" otherwise
 
 		-- Client arguments
+		host = args.host,
 		method = args.method,
 
 		-- Server arguments
@@ -268,11 +271,13 @@ local function initialize(conn, inst)
 			return "END"
 		end
 
+		-- TODO: Verify host (might not be necessary technically)
+
 		-- Verify method
-		if inst.method == "GET" or
-			inst.method == "POST" or
-			inst.method == "HEAD" or
-			inst.method == "PUT"
+		if inst.method == "GET"
+			or inst.method == "POST"
+			or inst.method == "HEAD"
+			or inst.method == "PUT"
 		then -- NOP
 		else
 			conn.message = "Invalid request method: `" .. tostring(inst.method) .. "`"
@@ -283,6 +288,9 @@ local function initialize(conn, inst)
 		local headers = inst.request.headers
 		if not headers["accept"] then
 			headers["accept"] = "*/*"
+		end
+		if inst.host and not headers["host"] then
+			headers["host"] = inst.host
 		end
 		-- TODO...
 	end
@@ -308,34 +316,42 @@ end
 -- ^^State: inst.length was made in consideration of this, but it may be insufficient
 local function receive(conn, inst)
 	local timeout = false
+	local _read = 0
+
 	inst.content = inst.content or {}
 
-	-- Remaining content has known length
-	if inst.length > 0 then
-		timeout = conn:read("-" .. tostring(inst.length), "n")
+	if inst.length ~= 0 then
+		-- len > 0: Remaining content has known length
+		-- len < 0: Read data until connection completes (HTTP/1.0 thing?)
+		local mode = (inst.length < 0) and "*a"
+			or ("-" .. tostring(inst.length))
+
+		timeout = conn:read(mode)
 		if timeout then return nil end
 
-		-- if conn.buffer then table.insert(inst.content, conn.buffer) end
+		if inst.length < 0 then
+			inst.length = 0
+		else
+			_read = #(conn.buffer or "")
+			inst.length = inst.length - _read -- Adjust remaining length
+		end
+
 		inst.request.body = conn.buffer
 		return "PROC"
 	end
 
 	-- "Main" HTTP request, read until empty line
 	-- NOTE: Match only '\n' as xread is set to CRLF -> LF conversion mode
-	local bytes = 0
 	repeat
 		timeout = conn:read("*l")
 		if timeout then return nil end
 
-		bytes = #(conn.buffer or "")
-		if bytes > 0 then
+		_read = #(conn.buffer or "")
+		if _read > 0 then
 			table.insert(inst.content, conn.buffer)
 		end
 
-	-- conn.buffer will be nil when the line is empty
-	-- until (#inst.content > 0) and (not conn.buffer)
-	until bytes == 0
-	inst.length = 0 -- Done reading, reset length
+	until _read == 0
 	return "PROC"
 end
 
@@ -345,14 +361,16 @@ local function process(conn, inst)
 	
 	-- Request line
 	-- If none, then we are in the "top" of an HTTP request
-	-- TODO: Reset this after submitting a request as a client
-	if not inst.request.endpoint then
+	local new = false
+	if (inst.server and not inst.request.endpoint)
+		or (not inst.server and not inst.request.status)
+	then new = true end
+	if new then
 		local _req = inst.content[1]
 
 		-- The first line of an HTTP request may be empty
 		-- TODO: Verify if a request should be considered invalid if more than one empty line preceeds it
 		if not _req then return "RECV" end
-		print(_req)
 
 		local matchstr =
 			inst.server and "^(%w+) (%S+) HTTP/(1%.[01])$"
@@ -370,7 +388,9 @@ local function process(conn, inst)
 
 		else
 			-- inst.version = a
-			inst.request.status = b
+
+			-- Status is guaranteed a number from the above match
+			inst.request.status = tonumber(b)
 
 		end
 
@@ -378,6 +398,8 @@ local function process(conn, inst)
 		local iter, state = ipairs(inst.content)
 		for _, line in iter, state, 1 do
 			-- Break up the header line
+			-- TODO: This will fail for something like `Host:\nlocalhost:80`
+			-- ^^(just replace %s* with %s+ ?? - Check official standard)
 			local _field, content = line:match("^([^:]+):%s*(.-)%s*$")
 
 			-- Header fields may be split across lines
@@ -394,18 +416,28 @@ local function process(conn, inst)
 		end
 
 		-- Check if the request has a body
-		-- TODO: This depends on the completion of header-specific validation!
-		local length = inst.request.headers["content-length"]
-		_, length = pcall(tonumber, length)
-		inst.length = length or 0
+		if not inst.server and (
+			(inst.request.status < 200)
+			or (inst.request.status == 204)
+			or (inst.request.status == 304)
+		) then
+			inst.length = 0
+		else
+			local length = inst.request.headers["content-length"]
+			_, length = pcall(tonumber, length)
+			inst.length = length or -1
+		end
 		
-		if inst.length > 0 then return "RECV" end
-	end
+		if inst.length == 0 then
+			-- NOP
+		else return "RECV" end
 
-	-- TODO: Handle the body
-	-- else
-	--	<call body handler; passed in as server argument akin to the api>
-	-- end
+	else
+		-- TODO: Handle the body (stored in inst.request.body not inst.content)
+		-- ^^(TODO consider moving that to inst.content since the inst.request.body should be used for "parsed" data?)
+
+		-- <call body handler; passed in as server argument akin to the api>
+	end
 
 	return inst.server and "CMD" or "FIN"
 end
@@ -624,18 +656,26 @@ local function resolve(conn, inst)
 		table.insert(payload, inst.content .. newline)
 	end
 
+	-- Debugging: Print the prepared payload
+	-- print("--------")
+	-- print(table.concat(payload))
+	-- print("--------")
+
 	-- Send the payload
 	local timeout = conn:send(table.concat(payload))
 	if timeout then return nil end
 
-	return inst.server and "FIN" or "RECV"
+	if inst.server then return "FIN"
+	else
+		inst.length = 0
+		inst.request = {
+			headers = {},
+		}
+		return "RECV"
+	end
 end
 
 local function finalize(conn, inst)
-	local _req = tostring(inst.request.body)
-	print("body:")
-	print(_req)
-
 	-- Websocket upgrade
 	if inst.action == "upgrade" then
 		-- print("upgrading to websockterino!! (636)")
