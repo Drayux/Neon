@@ -17,7 +17,7 @@ local server = {
 	-- These will become script arguments (TODO: port and various integrations)
 	timeout = 10,
 	rootdir = util.getcwd() .. "/pages",
-	logging = true,
+	logging = false,
 
 	--
 	seed = util.seed, -- Function to seed the RNG
@@ -31,7 +31,8 @@ function server:module(mod)
 	-- 	.. " such that regardless of being a one-shot or loop, the parent server"
 	-- 	.. " can retrieve the necessary data. (Likely to be a function callback.)")
 
-	local sock = cqsock.connect("drayux.com", 443)
+	local _host = "drayux.com"
+	local sock = cqsock.connect(_host, 443)
 	sock:starttls()
 
 	local conn = connection.new(sock, controller, 0)
@@ -41,6 +42,7 @@ function server:module(mod)
 		http = {
 			method = "GET",
 			endpoint = "/",
+			host = _host,
 		},
 	}
 
@@ -83,11 +85,8 @@ function server:loop()
 			conn:run("http", args, self.trigger)
 			cqcore.poll() -- Init the connection before accepting another
 		end
-	end -- while self.running
+	end -- [while self.running]
 end
-
--- TODO: Likely to need a function for notifying websockets (where host is the server)
---	of the data received from the API integrations....likely to be passed via a "state machine arg"
 
 function server:stop()
 	if not self.running then return end
@@ -100,8 +99,8 @@ function server:stop()
 	self.trigger:signal()
 end
 
--- controller:wrap(server.loop, server)
-controller:wrap(server.module, server, nil)
+controller:wrap(server.loop, server)
+-- controller:wrap(server.module, server, nil)
 controller:wrap(function()
 	-- TODO: If parameter, then use the signal handler else stop immediately
 	-- ....maybe? standalone vs OBS shutdown sequences look quite different

@@ -359,86 +359,89 @@ local function process(conn, inst)
 	-- TODO: Should we assume that this was called from a valid state?
 	-- AKA: inst.content needs to be a table or this will fail
 	
-	-- Request line
-	-- If none, then we are in the "top" of an HTTP request
 	local new = false
 	if (inst.server and not inst.request.endpoint)
 		or (not inst.server and not inst.request.status)
 	then new = true end
-	if new then
-		local _req = inst.content[1]
 
-		-- The first line of an HTTP request may be empty
-		-- TODO: Verify if a request should be considered invalid if more than one empty line preceeds it
-		if not _req then return "RECV" end
-
-		local matchstr =
-			inst.server and "^(%w+) (%S+) HTTP/(1%.[01])$"
-			or "^HTTP/(1%.[01]) (%d+)%s*(%a*)"
-		local a, b, c = _req:match(matchstr)
-		if not (a and b and c) then
-			conn.message = "Invalid request/status line"
-			return inst.server and "SEND" or "END"
-		end
-
-		if inst.server then
-			inst.method = a
-			inst.request.endpoint = b
-			inst.version = c
-
-		else
-			-- inst.version = a
-
-			-- Status is guaranteed a number from the above match
-			inst.request.status = tonumber(b)
-
-		end
-
-		local field = nil
-		local iter, state = ipairs(inst.content)
-		for _, line in iter, state, 1 do
-			-- Break up the header line
-			-- TODO: This will fail for something like `Host:\nlocalhost:80`
-			-- ^^(just replace %s* with %s+ ?? - Check official standard)
-			local _field, content = line:match("^([^:]+):%s*(.-)%s*$")
-
-			-- Header fields may be split across lines
-			if _field then field = _field
-			else content = line end
-
-			-- Verify and insert the header field data
-			local valid = _parseHeader(inst.request.headers, field, content)
-			if not valid then
-				-- Status defaults to 400: BAD REQUEST
-				conn.message = "Invalid header `" .. line .. "`"
-				return inst.server and "SEND" or "END"
-			end
-		end
-
-		-- Check if the request has a body
-		if not inst.server and (
-			(inst.request.status < 200)
-			or (inst.request.status == 204)
-			or (inst.request.status == 304)
-		) then
-			inst.length = 0
-		else
-			local length = inst.request.headers["content-length"]
-			_, length = pcall(tonumber, length)
-			inst.length = length or -1
-		end
-		
-		if inst.length == 0 then
-			-- NOP
-		else return "RECV" end
-
-	else
+	if not new then
 		-- TODO: Handle the body (stored in inst.request.body not inst.content)
 		-- ^^(TODO consider moving that to inst.content since the inst.request.body should be used for "parsed" data?)
+		print(inst.request.body)
 
 		-- <call body handler; passed in as server argument akin to the api>
+		return inst.server and "CMD" or "FIN"
 	end
 
+	-- The first line of an HTTP request may be empty
+	-- TODO: Verify if a request should be considered invalid if more than one empty line preceeds it
+	local _req = inst.content[1]
+	if not _req then return "RECV" end
+
+	local matchstr =
+		inst.server and "^(%w+) (%S+) HTTP/(1%.[01])$"
+		or "^HTTP/(1%.[01]) (%d+)%s*(%a*)"
+	local a, b, c = _req:match(matchstr)
+	if not (a and b and c) then
+		conn.message = "Invalid request/status line"
+		return inst.server and "SEND" or "END"
+	end
+
+	if inst.server then
+		inst.method = a
+		inst.request.endpoint = b
+		inst.version = c
+
+	else
+		-- inst.version = a
+
+		-- Status is guaranteed a number from the above match
+		inst.request.status = tonumber(b)
+
+	end
+
+	local field = nil
+	local iter, state = ipairs(inst.content)
+	for _, line in iter, state, 1 do
+		-- Break up the header line
+		-- TODO: This will fail for something like `Host:\nlocalhost:80`
+		-- ^^(just replace %s* with %s+ ?? - Check official standard)
+		local _field, content = line:match("^([^:]+):%s*(.-)%s*$")
+
+		-- Header fields may be split across lines
+		if _field then field = _field
+		else content = line end
+
+		-- Verify and insert the header field data
+		local valid = _parseHeader(inst.request.headers, field, content)
+		if not valid then
+			-- Status defaults to 400: BAD REQUEST
+			conn.message = "Invalid header `" .. line .. "`"
+			return inst.server and "SEND" or "END"
+		end
+	end
+
+	-- Check for a body
+	local length = inst.request.headers["content-length"]
+	_, length = pcall(tonumber, length)
+
+	-- HTTP server
+	if inst.server then
+		-- TODO: Consider adding a check for the method
+		inst.length = length or 0
+
+	-- HTTP client
+	elseif (inst.request.status < 200)
+		or (inst.request.status == 204)
+		or (inst.request.status == 304)
+	then
+		inst.length = 0
+
+	else
+		inst.length = length or -1
+	end
+	
+	if inst.length ~= 0 then return "RECV" end
 	return inst.server and "CMD" or "FIN"
 end
 
