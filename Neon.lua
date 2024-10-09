@@ -31,11 +31,14 @@ function server:module(mod)
 	-- 	.. " such that regardless of being a one-shot or loop, the parent server"
 	-- 	.. " can retrieve the necessary data. (Likely to be a function callback.)")
 
-	local _host = "drayux.com"
-	local sock = cqsock.connect(_host, 443)
-	sock:starttls()
+	-- local _host = "drayux.com"
+	local _host = "127.0.0.1"
+	local _port = 1085 -- 443
+	local sock = cqsock.connect(_host, _port)
+	-- sock:starttls()
 
 	local conn = connection.new(sock, controller, 0)
+	table.insert(self.connections, conn)
 	conn.num = self.logging and #self.connections or nil
 
 	local args = {
@@ -43,6 +46,13 @@ function server:module(mod)
 			method = "GET",
 			endpoint = "/",
 			host = _host,
+			headers = {
+				connection = "Upgrade",
+				upgrade = "websocket",
+
+				-- TODO: (Important) Generate a random websocket accept key with the http headers utility
+				["sec-websocket-key"] = "9RiU0WXT14zl6FTsNlPFXA==",
+			},
 		},
 	}
 
@@ -99,8 +109,14 @@ function server:stop()
 	self.trigger:signal()
 end
 
-controller:wrap(server.loop, server)
--- controller:wrap(server.module, server, nil)
+-- TODO: Actual arg parsing
+local clientMode = (arg[1] == "client")
+if clientMode then
+	controller:wrap(server.module, server, nil)
+	server.running = true
+else controller:wrap(server.loop, server)
+end
+
 controller:wrap(function()
 	-- TODO: If parameter, then use the signal handler else stop immediately
 	-- ....maybe? standalone vs OBS shutdown sequences look quite different

@@ -2,16 +2,16 @@
 
 local util = require("lib.util")
 local opcodes = {
-	CONTINUE = 0x00,
+	CONTINUE = 0x0,
 
 	-- Data frames
-	TEXT = 0x01,
-	BINARY = 0x02,
+	TEXT = 0x1,
+	BINARY = 0x2,
 
 	-- Control frames
-	CLOSE = 0x08,
-	PING = 0x09,
-	PONG = 0x0A,
+	CLOSE = 0x8,
+	PING = 0x9,
+	PONG = 0xA,
 }
 
 -- >> STATE OBJECT <<
@@ -22,7 +22,7 @@ local function _newInstance(args)
 		_frame = nil,
 
 		pong = true,				-- Server has sent an unresolved ping (true if resolved/false if pending)
-		client = args.client,		-- Is this a websocket client or server
+		client = false,		-- Is this a websocket client or server
 		interval = args.interval,	-- Interval between ping events to the client
 	}
 
@@ -66,7 +66,7 @@ function _readHeader(data)
 	_, byte = next()
 	local final = (byte & 0x80) > 0
 	local rsv = { (byte & 0x40) > 0, (byte & 0x20) > 0, (byte & 0x10) > 0 }
-	local opcode = byte & 0x0F
+	local opcode = byte & 0xF
 
 	len, byte = next()
 	local maskbit = (byte & 0x80) > 0
@@ -114,7 +114,7 @@ function _readHeader(data)
 		length = extlen or payloadlen,
 		mask = mask,
 	}
-
+	
 	return len - 1, header
 end
 
@@ -126,7 +126,7 @@ function _formatFrame(opcode, mask, payload)
 	local len = payload and #payload or 0
 	local ext = nil
 
-	if len >= 126 and len < 0x10000 then
+	if len >= 126 then
 		local range = 2
 		if len < 0x10000 then len = 126
 		else
@@ -134,25 +134,35 @@ function _formatFrame(opcode, mask, payload)
 			range = 8
 		end
 
-		-- Ensure ext takes up the full byte length
+		-- Ensures that ext takes up the full length within the frame
 		ext = { }
-		for i = 1, 8 do table.insert(ext, (len >> (8 * 8 - i)) & 0xFF) end
+		for i = 1, range do
+			local _byte = (#payload >> (8 * (range - i))) & 0xFF
+			table.insert(ext, _byte)
+		end
 		ext = table.concat(ext)
 	end
 
-	-- TODO: Generate a masking key
+	-- TODO: No mask should be generated for control frames (Verify this??)
 	local key = nil
-	if mask and len > 0 then
-		key = (math.random(0, 255) << 24)
-			| (math.random(0, 255) << 16)
-			| (math.random(0, 255) <<  8)
-			|  math.random(0, 255)
+	if mask and (len > 0) then
+		local _k1 = math.random(0, 255) -- MSB
+		local _k2 = math.random(0, 255)
+		local _k3 = math.random(0, 255)
+		local _k4 = math.random(0, 255)
+
+		local intkey = (_k1 << 24)
+			| (_k2 << 16)
+			| (_k3 << 8)
+			|  _k4
+
+		payload = _applyMask(intkey, payload)
+		key = string.char(_k1, _k2, _k3, _k4)
 	end
-	payload = _applyMask(key, payload)
 
 	-- Construct the frame string
-	local _b1 = (opcode & 0x0F) | 0x80 -- No fragmentation and no RSV options
-	local _b2 = (mask and 1 or 0) | len
+	local _b1 = 0x80 | opcode -- No fragmentation and no RSV options
+	local _b2 = (key and 0x80 or 0) | len
 	
 	local frame = string.char(_b1, _b2)
 	if ext then frame = frame .. ext end
@@ -176,15 +186,23 @@ end
 
 -- >> TRANSITIONS <<
 
+-- Set up the websocket as a client and begin listening
+local function clientInit(conn, inst)
+	inst.client = true
+	local timeout = sendFrame(conn, inst, "big booty bitches")
+	if timeout then return nil end
+	return "READY"
+end
+
 -- Send the client an initial opening frame
-local function initFrame(conn, inst)
+local function serverInit(conn, inst)
 	local timeout = sendFrame(conn, inst, "Hey, you. You're finally awake.")
 	if timeout then return nil end
 
 	return "READY"
 end
 
--- Listen for frames from the client
+-- Listen for frames on the socket
 local function listenFrame(conn, inst)
 	-- Check if we are in the middle of a frame or not
 	if inst._pending then return "FRAME" end
@@ -200,7 +218,7 @@ local function listenFrame(conn, inst)
 	return "FRAME"
 end
 
--- Retrieve a single frame over the wire
+-- Retrieve a single frame from the socket
 local function readFrame(conn, inst)
 	local len = 14
 	local header = nil
@@ -216,6 +234,7 @@ local function readFrame(conn, inst)
 		if conn.buffer then buf = buf .. conn.buffer end
 		len, header = _readHeader(buf)
 	end
+	print("received message from endpoint")
 
 	-- TODO: Validate the newly received frame
 	-- ...
@@ -253,15 +272,21 @@ end
 
 -- Perform operation depending on frame data
 local function resolveFrame(conn, inst)
-	if inst._frame.header["opcode"] == 0x0A then
-		print("debug: pong received (255)")
-		conn.expiration = util.time() + (inst.interval or conn.lifetime)
-		inst.pong = true
+	local opcode = inst._frame.header["opcode"]
+	if opcode == opcodes["CLOSE"] then
+		print("debug: close received (277)")
+		conn.expiration = util.time() + conn.lifetime
+		return (inst.client and "END") or "CLOSE"
 
-	elseif inst._frame.header["opcode"] == 0x09 then
-		print("debug: ping received (260)")
+	elseif opcode == opcodes["PING"] then
+		print("debug: ping received (281)")
 		local timeout = sendFrame(conn, inst, nil, "PONG")
 		if timeout then return nil end
+
+	elseif opcode == opcodes["PONG"] then
+		print("debug: pong received (276)")
+		conn.expiration = util.time() + (inst.interval or conn.lifetime)
+		inst.pong = true
 
 	else print(inst._frame.payload)
 	end
@@ -274,7 +299,11 @@ end
 local function finalFrame(conn, inst)
 	conn.expiration = util.time() + conn.lifetime
 
-	local message = conn.message or "~ And then there was only darkness. ~"
+	local message = nil
+	if not inst.client then 
+		message = conn.message or "~ And then there was only darkness. ~"
+	end
+
 	local timeout = sendFrame(conn, inst, message, "CLOSE")
 	if timeout then return nil end
 	
@@ -284,16 +313,17 @@ end
 
 -- >> INTERRUPTS <<
 
--- Websocket is due to hear from the connected client
+-- Websocket is due to hear from the connected endpoint
 local function handleTimeout(conn, inst)
 	-- Just received a frame, delay timeout routine
 	if conn.state == "RES" then return end
 
+	-- Ping operation (when the endpoint should send ping frames)
 	local running = (conn.state == "READY") or (conn.state == "FRAME")
 	if running then
 		-- If no pong, then client has probably disconnected
 		if not inst.pong then
-			conn.message = "No pong from client"
+			conn.message = "Ping not acknowledged"
 			conn.interrupt = "CLOSE"
 			
 		else conn.interrupt = "PING"
@@ -302,23 +332,25 @@ local function handleTimeout(conn, inst)
 		return
 	end
 
-	conn.message = "Websocket timeout"
+	conn.message = "Timeout"
 
 	-- Something hung at the init/close step
-	if conn.state == "INIT" or conn.state == "CLOSE" then
-		conn.interrupt = "END"
-		return
+	if conn.state == "CLOSE"
+		or conn.state == "C_INIT"
+		or conn.state == "S_INIT"
+	then conn.interrupt = "END"
+	else conn.interrupt = "CLOSE"
 	end
-
-	conn.interrupt = "CLOSE"
 end
 
 -- Close the websocket gracefully (with the proper handshake)
 local function handleClose(conn, inst)
-	conn.message = "Websocket close"
+	print("should be closing uwu")
+	conn.message = "Websocket closed by " .. (inst.client and "client" or "server")
 
-	local running = (conn.state == "READY") or (conn.state == "FRAME") or (conn.state == "RES")
-
+	local running = (conn.state == "READY")
+		or (conn.state == "FRAME")
+		or (conn.state == "RES")
 	if running then conn.interrupt = "CLOSE"
 	else conn.interrupt = "END"
 	end
@@ -327,7 +359,10 @@ end
 
 -- >> TRANSITION TABLE <<
 local websocket = {
-	INIT = initFrame,
+	-- Initialization
+	C_INIT = clientInit,
+	S_INIT = serverInit,
+
 	READY = listenFrame,
 	FRAME = readFrame,
 	PING = pingClient,
@@ -346,7 +381,7 @@ local websocket = {
 setmetatable(websocket, { __index = function(tbl, key)
 	if not key then return nil end
 
-	if key == "START" then return tbl["INIT"] end
+	if key == "START" then return tbl["C_INIT"] end
 	return nil
 end })
 

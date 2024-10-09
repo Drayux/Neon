@@ -231,46 +231,6 @@ local function _wsGenerateAccept(key)
 	return util.encode(hashed)
 end
 
--- Process a websocket accept key from the server
-local function _wsVerifyAccept(key)
-	if not key or key == "" then return false end
-
-	print("TODO verify websocket accept (238)")
-	return true
-end
-
--- Determine if we should upgrade the connection to a websocket
-local function _wsShouldUpgrade(inst)
-	local headers = inst.headers
-
-	local connection = headers["connection"]
-	local upgrade = headers["upgrade"]
-	local wskey = headers["sec-websocket-key"]
-	local wsaccept = headers["sec-websocket-accept"]
-
-	-- Ensure all conditions are met
-	if not (connection and upgrade and (wskey or wsaccept)) then
-		return false
-	end
-
-	-- Look for the 'Connection: Upgrade' field
-	for _, option in ipairs(connection) do
-		if option:lower() == "upgrade" then
-			goto break_loop
-		end
-	end
-	-- We will jump this return if the upgrade field is found
-	repeat return false until true
-	::break_loop::
-
-	-- Look for the 'Upgrade: websocket' field
-	for _, protocol in ipairs(upgrade) do
-		if protocol:lower() == "websocket" then
-			return true
-		end
-	end
-end
-
 -- >> TRANSITIONS <<
 
 	-- TODO: "Wait" state
@@ -281,10 +241,6 @@ end
 	-- incomplete ; Such states are dropped in the *current* design
 	-- This will require a small tweak to the population/verification of the inst.request component
 
--- Define the initial state of the data exchange
---- Parameter verification
---- Client/Server disambiguation
---- Transport-layer security (TODO)
 local function initialize(conn, inst)
 	-- Verify client/server operation
 	if inst.server then
@@ -294,6 +250,7 @@ local function initialize(conn, inst)
 		inst.headers = nil
 		inst.body = nil
 
+		inst.action = nil
 		inst.status = 400
 
 	else
@@ -341,7 +298,6 @@ local function initialize(conn, inst)
 	end
 
 	-- Reset shared state components
-	inst.action = nil
 	inst.request = nil
 	inst.length = #(inst.body or "")
 	inst.status = inst.server and 400 or 0
@@ -359,13 +315,8 @@ local function initialize(conn, inst)
 	return inst.server and "RECV" or "SEND"
 end
 
--- Receive data stream from the socket
---- Instance variable `length` used to differentiate HTTP request portion,
----		data portion with known length, and data portion of unknown length
----	HTTP request stored in inst.request for processing
----	HTTP data stored to inst.body buffer
--- TODO: Add support for HTTP/2 frames
---- inst.length was made in consideration of this, but it may be insufficient
+-- TODO: Support for HTTP/2
+-- ^^State: inst.length was made in consideration of this, but it may be insufficient
 local function receive(conn, inst)
 	local timeout = false
 	local _read = 0
@@ -408,11 +359,6 @@ local function receive(conn, inst)
 	return "PROC"
 end
 
--- Decode the contents of the request/data buffers
---- Status/request line discetion
---- Header parsing (formatted within a series of tables)
---- Body processing via machine arg (TODO)
--- This state should be entered once or twice in normal flow
 local function process(conn, inst)
 	-- TODO: Should we assume that this was called from a valid state?
 	-- AKA: inst.request needs to be a table or this will fail
@@ -501,14 +447,9 @@ local function process(conn, inst)
 	end
 	
 	if inst.length ~= 0 then return "RECV" end
-	return inst.server and "CMD" or "SWAP"
+	return inst.server and "CMD" or "FIN"
 end
 
--- Dictate behavior based upon the conditions of the request
--- SERVER-SPECIFIC ROUTINE
---- Process an API command
---- Upgrade to websocket
---- Serve a requested file
 local function command(conn, inst)
 	local method = inst.method
 
@@ -547,10 +488,34 @@ local function command(conn, inst)
 	-- Check for websocket upgrade
 	local headers = inst.headers
 	if method == "GET" then
-		if _wsShouldUpgrade(inst) then
-			inst.action = "upgrade"
-			inst.status = 101
-			return "SEND"
+		local connection = headers["connection"]
+		local upgrade = headers["upgrade"]
+		local wskey = headers["sec-websocket-key"]
+		local shouldUpgrade = false
+
+		-- Ensure all conditions are met
+		if not (connection and upgrade and wskey) then
+			goto no_upgrade
+		end
+
+		for _, option in ipairs(connection) do
+			-- TODO: Consider adding a break, but possibly at the cost of readability
+			if option:lower() == "upgrade" then
+				shouldUpgrade = true
+			end
+		end
+
+		-- `Connection: Upgrade` was not in the headers
+		if not shouldUpgrade then
+			goto no_upgrade
+		end
+
+		for _, protocol in ipairs(upgrade) do
+			if protocol:lower() == "websocket" then
+				inst.action = "upgrade"
+				inst.status = 101
+				return "SEND"
+			end
 		end
 	elseif method == "HEAD"
 	then -- NOP
@@ -640,30 +605,12 @@ local function command(conn, inst)
 	return "SEND"
 end
 
-local function protocol(conn, inst)
-	if inst.status == 101 then
-		if not _wsShouldUpgrade(inst) then
-			return "END"
-		end
-
-		-- Verify the accept key from the server
-		local key = inst.headers["sec-websocket-accept"]
-		if _wsVerifyAccept(key) then
-			inst.action = "upgrade"
-		end
-	end
-
-	-- TODO: Any other client-side processing here...
-
-	return "FIN"
-end
-
 local function resolve(conn, inst)
 	local newline = "\r\n"
 	local payload = {}
 	local headers = inst.server and {} or inst.headers
 
-	local protocol = "HTTP/" .. tostring(inst.version or 1.1)
+	local protocol = "HTTP/" .. tostring(inst.version or 1.0)
 	if inst.server then
 		-- Build the status line
 		local code = tostring(inst.status or 400)
@@ -745,8 +692,8 @@ end
 local function finalize(conn, inst)
 	-- Websocket upgrade
 	if inst.action == "upgrade" then
-		local initState = inst.server and "S_INIT" or "C_INIT"
-		conn:swap("websocket", initState)
+		-- print("upgrading to websockterino!! (636)")
+		conn:swap("websocket", "START")
 		return nil
 	end
 
@@ -790,7 +737,7 @@ local http = {
 	CMD = command,	-- Process server command (if needed) (was processRequest before)
 
 	-- Client-specific
-	SWAP = protocol, -- Client-side processing aka check for websocket upgrade (TODO: Rename me)
+	-- REQ = prepare, -- Build client request
 
 	-- Interrupt routines
 	-- _DATA = <poll for response buffer (needs to be state-aware)>
