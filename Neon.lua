@@ -7,6 +7,38 @@ local connection = require("lib.connection")
 local util = require("lib.util")
 
 
+-- "Unit" tests for http headers
+local headers = require("lib.http.headers")
+local _h = headers.new()
+
+_h:create("Accept", "toes, boobs, */*")
+_h:create("accept", "", "onions", "")
+_h:create("accept")
+_h:create("accept", "apples")
+_h:create("content-length", 24)
+_h:create("content-length")
+_h:create("content-length", 4)
+print(_h:dump()) 
+
+repeat return until true
+
+
+-- Blocks and handles CTRL-C interrupt signal (for graceful shutdown)
+local _catchSIGINT = function(callback, ...)
+	-- TODO: If parameter, then use the signal handler else stop immediately
+	-- ....maybe? standalone vs OBS shutdown sequences look quite different
+	cqsgnl.block(cqsgnl.SIGINT)
+
+	local signal = cqsgnl.listen(cqsgnl.SIGINT)
+	signal:wait()
+	cqsgnl.unblock(cqsgnl.SIGINT)
+	
+	print("\nBegin manual server shutdown")
+	if type(callback) == "function" then
+		callback(...)
+	end
+end
+
 local controller = cqcore.new()
 local server = {
 	socket = cqsock.listen("127.0.0.1", 1085),
@@ -17,7 +49,7 @@ local server = {
 	-- These will become script arguments (TODO: port and various integrations)
 	timeout = 10,
 	rootdir = util.getcwd() .. "/pages",
-	logging = false,
+	logging = true,
 
 	--
 	seed = util.seed, -- Function to seed the RNG
@@ -37,7 +69,7 @@ function server:module(mod)
 	local sock = cqsock.connect(_host, _port)
 	-- sock:starttls()
 
-	local conn = connection.new(sock, controller, 0)
+	local conn = connection.new(sock, controller, self.timeout)
 	table.insert(self.connections, conn)
 	conn.num = self.logging and #self.connections or nil
 
@@ -114,21 +146,10 @@ local clientMode = (arg[1] == "client")
 if clientMode then
 	controller:wrap(server.module, server, nil)
 	server.running = true
-else controller:wrap(server.loop, server)
+else 
+	controller:wrap(server.loop, server)
+	-- controller:wrap(_catchSIGINT, server.stop, server)
 end
-
-controller:wrap(function()
-	-- TODO: If parameter, then use the signal handler else stop immediately
-	-- ....maybe? standalone vs OBS shutdown sequences look quite different
-	cqsgnl.block(cqsgnl.SIGINT)
-
-	local signal = cqsgnl.listen(cqsgnl.SIGINT)
-	signal:wait()
-	cqsgnl.unblock(cqsgnl.SIGINT)
-	
-	print("\nBegin manual server shutdown")
-	server:stop()
-end)
 
 assert(controller:loop())
 print("Server shutdown successful")

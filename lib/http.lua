@@ -1,6 +1,7 @@
 -- >>> http.lua: HTTP server state machine for connection objects
 
 local util = require("lib.util")
+local headers = require("lib.http.headers")
 
 -- HTTP status codes
 local _codes = {
@@ -36,62 +37,6 @@ local _codes = {
 	_505 = "HTTP VERSION NOT SUPPORTED",
 }
 
--- Header-specific parsing
--- TODO: Move this to utils (so it can be used by modules seeking to create request headers)
-local _headers = {
-	-- Standardized Common
-	-- TODO: Each header instead returns a table that contains the "proper capitalization", parsing function, and the creation (for client req mostly) function
-	["accept"] = nil,
-	["connection"] = nil,
-	["content-length"] = function(data, content)
-		-- Single value only
-		if data then return false, data end
-		local _, length = pcall(tonumber, content)
-
-		if (not length) or (length < 0) then return false, nil end
-		return true, length end,
-	["content-type"] = nil,
-	["host"] = nil, -- TODO
-	["keep-alive"] = nil,
-	["sec-websocket-accept"] = function(data, content)
-		-- Single value only
-		if data then return false, data end
-		if #content == 0 then return false, nil end
-		return true, content end,
-	["sec-websocket-key"] = function(data, content)
-		-- Single value only
-		if data then return false, data end
-		if #content == 0 then return false, nil end
-		return true, content end,
-	["upgrade"] = nil,
-
-	-- Standardized Extra (TODO: Unimplemented!)
-	-- ["accept-charset"] = function(fields) end,
-	-- ["accept-encoding"] = function(fields) end,
-	-- ["accept-language"] = function(fields) end,
-	-- ["access-control-allow-origin"] = function(fields) end,
-	-- ["access-control-request-headers"] = function(fields) end,
-	-- ["access-control-request-method"] = function(fields) end,
-	-- ["authorization"] = function(fields) end,
-	-- ["cache-control"] = function(fields) end,
-	-- ["content-encoding"] = function(fields) end,
-	-- ["content-language"] = function(fields) end,
-	-- ["cookie"] = function(fields) end,
-	-- ["date"] = function(fields) end,
-	-- ["last-modified"] = function(fields) end,
-	-- ["origin"] = function(fields) end,
-	-- ["priority"] = function(fields) end,
-	-- ["referrer"] = function(fields) end,
-	-- ["sec-websocket-extensions"] = function(fields) end,
-	-- ["sec-websocket-protocol"] = function(fields) end,
-	-- ["sec-websocket-version"] = function(fields) end,
-	-- ["transfer-encoding"] = function(fields) end,
-	-- ["user-agent"] = function(fields) end,
-	-- ["www-authenticate"] = function(fields) end,
-
-	-- Neon-specific
-	["command"] = function(fields) end,
-}
 
 -- >> STATE OBJECT <<
 local function _newInstance(args)
@@ -101,6 +46,10 @@ local function _newInstance(args)
 	-- TODO: Lowercase all request headers!
 	-- TODO: Consider using args.host as the client condition instead
 	local _server = not args.method
+	if args.headers then
+		assert(args.headers.type() == "headers",
+			"Invalid header format for request (use lib.http.headers.new() )")
+	end
 
 	local inst = {
 		-- Client arguments
@@ -134,57 +83,6 @@ end
 
 
 -- >> UTILITY <<
-
--- Splits and validates the fields of a header
--- TODO: Refers to the header table for specific header rules
--- Returns a boolean if header is valid
-local function _parseHeader(headers, field, content)
-	if not field then return false end
-
-	-- Bad request if a header has a space before the colon
-	if field:match("%s$") then return false
-	else field = field:lower() end
-
-	local valid = false
-	local data = headers[field]
-	local rule = _headers[field] or function(d, c)
-		-- "Default" operation is to assume a list of comma and/or space-seperated entries
-		local _data = d or {}
-
-		-- No change does not invalidate header
-		if not c then return true, d end
-
-		-- TODO: Better default; perhaps specify delimiter (comma, semicolon, etc) and/or datatype
-		for directive in (c .. "\n"):gmatch("([^%s]-)[,;%s]+") do
-			-- TODO: Ensure duplicates are not being added
-			table.insert(_data, directive)
-		end
-		return true, _data
-	end
-
-	valid, data = rule(data, content)
-	headers[field] = data
-
-	return valid
-end
-
--- Check if a field exists in a header
--- Optionally enable case-sensitivity
-local function _searchHeader(headers, key, value, case)
-	if type(headers) ~= "table" then return false end
-	
-	local _header = headers[key:lower()]
-	if not _header then return false end
-
-	value = case and value or value:lower()
-
-	for _, field in ipairs(_header) do
-		field = case and field or field:lower()
-		if field == value then return true end
-	end
-
-	return false
-end
 
 -- Opens a file via Lua's IO API
 -- If the path doesn't exist, then attempt the provided extension
@@ -241,12 +139,12 @@ end
 
 -- Determine if we should upgrade the connection to a websocket
 local function _wsShouldUpgrade(inst)
-	local headers = inst.headers
+	local _headers = inst.headers
 
-	local connection = headers["connection"]
-	local upgrade = headers["upgrade"]
-	local wskey = headers["sec-websocket-key"]
-	local wsaccept = headers["sec-websocket-accept"]
+	local connection = _headers:parse("connection")
+	local upgrade = _headers:parse("upgrade")
+	local wskey = _headers:parse("sec-websocket-key")
+	local wsaccept = _headers:parse("sec-websocket-accept")
 
 	-- Ensure all conditions are met
 	if not (connection and upgrade and (wskey or wsaccept)) then
@@ -327,16 +225,16 @@ local function initialize(conn, inst)
 		end
 
 		-- Populate common headers
-		local headers = inst.headers or {}
-		if not headers["accept"] then
-			headers["accept"] = "*/*"
+		local _headers = inst.headers or headers.new()
+		if not _headers:parse("accept") then
+			_headers:create("accept")
 		end
-		if inst.host and not headers["host"] then
-			headers["host"] = inst.host
+		if inst.host and not _headers:parse("host") then
+			_headers:create("host", inst.host)
 		end
 		-- TODO...
 
-		inst.headers = headers
+		inst.headers = _headers
 
 	end
 
@@ -396,7 +294,7 @@ local function receive(conn, inst)
 	-- "Main" HTTP request, read until empty line
 	-- NOTE: Match only '\n' as xread is set to CRLF -> LF conversion mode
 	repeat
-		timeout = conn:read("*l")
+		timeout = conn:read("*l") -- *l -> Trim EOL
 		if timeout then return nil end
 
 		_read = #(conn.buffer or "")
@@ -457,7 +355,7 @@ local function process(conn, inst)
 
 	-- Process request/response headers
 	-- TODO: It may be prudent to always create a new table
-	inst.headers = inst.headers or {}
+	inst.headers = inst.headers or headers.new()
 
 	local field = nil
 	local iter, state = ipairs(inst.request)
@@ -467,21 +365,29 @@ local function process(conn, inst)
 		-- ^^(just replace %s* with %s+ ?? - Check official standard)
 		local _field, content = line:match("^([^:]+):%s*(.-)%s*$")
 
+		-- Matched '<field>: <content>'
+		if _field then
+			-- Bad request if a header has a space before the colon
+			if _field:match("%s$") then
+				-- Status defaults to 400: BAD REQUEST
+				conn.message = "Invalid header `" .. line .. "`"
+				return inst.server and "SEND" or "END"
+			end
+
+			-- Otherwise populate the new header field
+			field = _field
+
 		-- Header fields may be split across lines
-		if _field then field = _field
 		else content = line end
 
-		-- Verify and insert the header field data
-		local valid = _parseHeader(inst.headers, field, content)
-		if not valid then
-			-- Status defaults to 400: BAD REQUEST
-			conn.message = "Invalid header `" .. line .. "`"
-			return inst.server and "SEND" or "END"
-		end
+		-- Insert the header field data
+		inst.headers:create(field, content)
 	end
+	
+	-- TODO: inst.header:validate() ...
 
 	-- Check for a body
-	local length = inst.headers["content-length"]
+	local length = inst.headers:parse("content-length")
 	_, length = pcall(tonumber, length)
 
 	-- HTTP server
@@ -510,13 +416,14 @@ end
 --- Upgrade to websocket
 --- Serve a requested file
 local function command(conn, inst)
-	local method = inst.method
+	local _method = inst.method
+	local _headers = inst.headers
 
 	-- Handle server/OBS-frontend commands
-	if method == "POST" then
+	if _method == "POST" then
 		inst.action = "command" -- Response body will be JSON format
 
-		local commands = inst.headers["command"]
+		local commands = _headers:parse("command")
 		local output = {}
 		-- inst.request = "{ \"error\": \"" .. message .. "\" }"
 
@@ -534,9 +441,9 @@ local function command(conn, inst)
 			goto command_send
 		end
 		
-		for cmd in commands do
+		for cmdname in commands do
 			-- TODO: Command handling
-			output[cmd] = "boobies"
+			output[cmdname] = "boobies"
 		end
 
 		::command_send::
@@ -545,14 +452,13 @@ local function command(conn, inst)
 	end
 	
 	-- Check for websocket upgrade
-	local headers = inst.headers
-	if method == "GET" then
+	if _method == "GET" then
 		if _wsShouldUpgrade(inst) then
 			inst.action = "upgrade"
 			inst.status = 101
 			return "SEND"
 		end
-	elseif method == "HEAD"
+	elseif _method == "HEAD"
 	then -- NOP
 	else
 		-- Only HEAD, GET, and POST are supported
@@ -617,7 +523,7 @@ local function command(conn, inst)
 	inst.status = 200 -- The file exists
 
 	-- A HEAD request would now be complete
-	if method == "HEAD" then
+	if _method == "HEAD" then
 		file:close()
 		return "SEND"
 	end
@@ -647,7 +553,7 @@ local function protocol(conn, inst)
 		end
 
 		-- Verify the accept key from the server
-		local key = inst.headers["sec-websocket-accept"]
+		local key = inst.headers:parse("sec-websocket-accept")
 		if _wsVerifyAccept(key) then
 			inst.action = "upgrade"
 		end
@@ -659,9 +565,9 @@ local function protocol(conn, inst)
 end
 
 local function resolve(conn, inst)
-	local newline = "\r\n"
+	local _headers = inst.server and headers.new() or inst.headers
 	local payload = {}
-	local headers = inst.server and {} or inst.headers
+	local newline = "\r\n"
 
 	local protocol = "HTTP/" .. tostring(inst.version or 1.1)
 	if inst.server then
@@ -674,13 +580,17 @@ local function resolve(conn, inst)
 
 		-- Add relevant headers
 		if inst.action == "command" then
-			headers["command"] = table.concat(headers["command"], ", ")
+			_headers:create("command", "TODO command handling")
+
 		elseif inst.action == "upgrade" then
 			-- NOTE: Specifically use inst.headers here
-			local wsaccept = _wsGenerateAccept(inst.headers["sec-websocket-key"])
-			headers["connection"] = "Upgrade"
-			headers["upgrade"] = "websocket"
-			headers["sec-websocket-accept"] = wsaccept
+			-- TODO: Change this to the websocket state val
+			local key = inst.headers:parse("sec-websocket-key")
+			local wsaccept = _wsGenerateAccept(key)
+			_headers:create("connection", "Upgrade")
+			_headers:create("upgrade", "websocket")
+			_headers:create("sec-websocket-accept", wsaccept)
+
 		-- elseif inst.action == "file" then
 		end
 	else
@@ -694,26 +604,21 @@ local function resolve(conn, inst)
 	-- Check if a body should be sent
 	-- TODO: The check for "string" may now be extraneous
 	if (inst.length > 0) and (type(inst.request) == "string") then
-		if not headers["content-length"] then
-			headers["content-length"] = tostring(inst.length)
-		end
-		if not headers["content-type"] then
-			headers["content-type"] =
-				(inst.action == "file") and "text/html" or
-				"application/json"
-		end
+		-- Existing values will not be replaced
+		_headers:create("content-length", inst.length)
+		_headers:create("content-type", (inst.action == "file")
+			and "text/html"
+			or "application/json")
 	end
 	
 	-- Attach headers to payload
-	for k, v in pairs(headers) do
-		table.insert(payload, k .. ": " .. v .. newline)
-	end
+	table.insert(payload, _headers:dump(newline))
 
 	-- Addtional newline to seperate the request and body/end
 	table.insert(payload, newline)
 
 	-- Attach body to payload
-	if headers["content-type"] then
+	if _headers:parse("content-type") then
 		table.insert(payload, inst.request .. newline)
 	end
 
@@ -754,7 +659,7 @@ local function finalize(conn, inst)
 	-- TODO: Consider adding option if this should be respected
 	-- TODO: Check keep-alive header for requested expiration time
 	inst.persistent = inst.persistent or
-		(not inst.server) and _searchHeader(inst.headers, "connection", "keep-alive")
+		(not inst.server) and inst.headers:search("connection", "keep-alive")
 	if inst.persistent and conn.expiration then
 		conn.expiration = util.time() + conn.lifetime
 		return "INIT"

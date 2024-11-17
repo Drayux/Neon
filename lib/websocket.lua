@@ -234,7 +234,6 @@ local function readFrame(conn, inst)
 		if conn.buffer then buf = buf .. conn.buffer end
 		len, header = _readHeader(buf)
 	end
-	print("received message from endpoint")
 
 	-- TODO: Validate the newly received frame
 	-- ...

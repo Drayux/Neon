@@ -49,7 +49,7 @@ end
 -- Retrieve any pending data (HTTP CRLF standard)
 -- Usage of this function should always check for timeouts
 -- NOTE: The current mode translates CRLF -> LF
--- TODO: (consider fixing) If the connection dies, then this "hangs" at the poll
+-- TODO - IMPORTANT: If the connection dies, then this "hangs" at the poll
 function api:read(fmt, mode)
 	self.buffer = nil
 	local data, status = self.socket:recv(fmt, mode)
