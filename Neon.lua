@@ -7,20 +7,18 @@ local connection = require("lib.connection")
 local util = require("lib.util")
 
 
--- "Unit" tests for http headers
-local headers = require("lib.http.headers")
-local _h = headers.new()
-
-_h:create("Accept", "toes, boobs, */*")
-_h:create("accept", "", "onions", "")
-_h:create("accept")
-_h:create("accept", "apples")
-_h:create("content-length", 24)
-_h:create("content-length")
-_h:create("content-length", 4)
-print(_h:dump()) 
-
-repeat return until true
+-- Some "unit tests" for http headers
+-- local headers = require("lib.http.headers")
+-- local _h = headers.new()
+-- _h:insert("keep-alive", "application/soap+xml; charset=utf-8; action=\"urn:CreateCredential\"")
+-- _h:insert("sec-websocket-key", "dGhlIHNhbXBsZSBub2o5jZQ==")
+-- local ret = _h:insert("upgrade", "a_protocol/1, example, another_protocol/2.2")
+-- print("items in list: " .. #ret)
+-- print(_h:dump()) 
+-- local field, content
+-- field, content = headers.split("Accept: */*")
+-- print(tostring(field), tostring(content))
+-- repeat return until true
 
 
 -- Blocks and handles CTRL-C interrupt signal (for graceful shutdown)
@@ -63,11 +61,12 @@ function server:module(mod)
 	-- 	.. " such that regardless of being a one-shot or loop, the parent server"
 	-- 	.. " can retrieve the necessary data. (Likely to be a function callback.)")
 
-	-- local _host = "drayux.com"
-	local _host = "127.0.0.1"
-	local _port = 1085 -- 443
+	local _host = "drayux.com"
+	local _port = 443
+	-- local _host = "127.0.0.1"
+	-- local _port = 1085 -- 443
 	local sock = cqsock.connect(_host, _port)
-	-- sock:starttls()
+	sock:starttls()
 
 	local conn = connection.new(sock, controller, self.timeout)
 	table.insert(self.connections, conn)
@@ -79,11 +78,11 @@ function server:module(mod)
 			endpoint = "/",
 			host = _host,
 			headers = {
-				connection = "Upgrade",
-				upgrade = "websocket",
+				-- connection = "Upgrade",
+				-- upgrade = "websocket",
 
 				-- TODO: (Important) Generate a random websocket accept key with the http headers utility
-				["sec-websocket-key"] = "9RiU0WXT14zl6FTsNlPFXA==",
+				-- ["sec-websocket-key"] = "9RiU0WXT14zl6FTsNlPFXA==",
 			},
 		},
 	}

@@ -1,6 +1,7 @@
 -- >>> http.lua: HTTP server state machine for connection objects
 
 local util = require("lib.util")
+local headers = require("lib.http.headers")
 
 -- HTTP status codes
 local _codes = {
@@ -36,71 +37,15 @@ local _codes = {
 	_505 = "HTTP VERSION NOT SUPPORTED",
 }
 
--- Header-specific parsing
--- TODO: Move this to utils (so it can be used by modules seeking to create request headers)
-local _headers = {
-	-- Standardized Common
-	-- TODO: Each header instead returns a table that contains the "proper capitalization", parsing function, and the creation (for client req mostly) function
-	["accept"] = nil,
-	["connection"] = nil,
-	["content-length"] = function(data, content)
-		-- Single value only
-		if data then return false, data end
-		local _, length = pcall(tonumber, content)
-
-		if (not length) or (length < 0) then return false, nil end
-		return true, length end,
-	["content-type"] = nil,
-	["host"] = nil, -- TODO
-	["keep-alive"] = nil,
-	["sec-websocket-accept"] = function(data, content)
-		-- Single value only
-		if data then return false, data end
-		if #content == 0 then return false, nil end
-		return true, content end,
-	["sec-websocket-key"] = function(data, content)
-		-- Single value only
-		if data then return false, data end
-		if #content == 0 then return false, nil end
-		return true, content end,
-	["upgrade"] = nil,
-
-	-- Standardized Extra (TODO: Unimplemented!)
-	-- ["accept-charset"] = function(fields) end,
-	-- ["accept-encoding"] = function(fields) end,
-	-- ["accept-language"] = function(fields) end,
-	-- ["access-control-allow-origin"] = function(fields) end,
-	-- ["access-control-request-headers"] = function(fields) end,
-	-- ["access-control-request-method"] = function(fields) end,
-	-- ["authorization"] = function(fields) end,
-	-- ["cache-control"] = function(fields) end,
-	-- ["content-encoding"] = function(fields) end,
-	-- ["content-language"] = function(fields) end,
-	-- ["cookie"] = function(fields) end,
-	-- ["date"] = function(fields) end,
-	-- ["last-modified"] = function(fields) end,
-	-- ["origin"] = function(fields) end,
-	-- ["priority"] = function(fields) end,
-	-- ["referrer"] = function(fields) end,
-	-- ["sec-websocket-extensions"] = function(fields) end,
-	-- ["sec-websocket-protocol"] = function(fields) end,
-	-- ["sec-websocket-version"] = function(fields) end,
-	-- ["transfer-encoding"] = function(fields) end,
-	-- ["user-agent"] = function(fields) end,
-	-- ["www-authenticate"] = function(fields) end,
-
-	-- Neon-specific
-	["command"] = function(fields) end,
-}
 
 -- >> STATE OBJECT <<
 local function _newInstance(args)
 	if not args then args = {} end
 
 	-- Clients will start with their request populated
-	-- TODO: Lowercase all request headers!
 	-- TODO: Consider using args.host as the client condition instead
 	local _server = not args.method
+	-- local _headers = args.method and headers.new(args.headers) or nil
 
 	local inst = {
 		-- Client arguments
@@ -117,10 +62,11 @@ local function _newInstance(args)
 		persistent = false, -- Keep the connection alive
 		
 		-- Connection state
-		request = nil, -- Content buffer (TODO: When sending a response, only send a string, not a table)
-		length = 0, -- Content length
 		status = 0,
+		length = 0, -- Content length
+		request = nil, -- Content buffer (TODO: When sending a response, only send a string, not a table)
 		action = nil, -- Requested operation
+		pending = false, -- Host is expecting a response (reset request state once true)
 
 		-- Request state
 		method = args.method,
@@ -134,57 +80,6 @@ end
 
 
 -- >> UTILITY <<
-
--- Splits and validates the fields of a header
--- TODO: Refers to the header table for specific header rules
--- Returns a boolean if header is valid
-local function _parseHeader(headers, field, content)
-	if not field then return false end
-
-	-- Bad request if a header has a space before the colon
-	if field:match("%s$") then return false
-	else field = field:lower() end
-
-	local valid = false
-	local data = headers[field]
-	local rule = _headers[field] or function(d, c)
-		-- "Default" operation is to assume a list of comma and/or space-seperated entries
-		local _data = d or {}
-
-		-- No change does not invalidate header
-		if not c then return true, d end
-
-		-- TODO: Better default; perhaps specify delimiter (comma, semicolon, etc) and/or datatype
-		for directive in (c .. "\n"):gmatch("([^%s]-)[,;%s]+") do
-			-- TODO: Ensure duplicates are not being added
-			table.insert(_data, directive)
-		end
-		return true, _data
-	end
-
-	valid, data = rule(data, content)
-	headers[field] = data
-
-	return valid
-end
-
--- Check if a field exists in a header
--- Optionally enable case-sensitivity
-local function _searchHeader(headers, key, value, case)
-	if type(headers) ~= "table" then return false end
-	
-	local _header = headers[key:lower()]
-	if not _header then return false end
-
-	value = case and value or value:lower()
-
-	for _, field in ipairs(_header) do
-		field = case and field or field:lower()
-		if field == value then return true end
-	end
-
-	return false
-end
 
 -- Opens a file via Lua's IO API
 -- If the path doesn't exist, then attempt the provided extension
@@ -231,6 +126,8 @@ local function _wsGenerateAccept(key)
 	return util.encode(hashed)
 end
 
+-- TODO: Helper function that breaks a URL into the protocol, host, and endpoint
+
 -- >> TRANSITIONS <<
 
 	-- TODO: "Wait" state
@@ -250,12 +147,19 @@ local function initialize(conn, inst)
 		inst.headers = nil
 		inst.body = nil
 
-		inst.action = nil
 		inst.status = 400
-
+		inst.action = nil
+		inst.pending = true
 	else
 		-- Connected as a client
 		-- Always default as a client for security (a bad actor could respond to our request with a request of its own, such that we respond with our OAuth token, even though we initalized the connection)
+
+		---- TODO: TRANSITION TO WAIT STATE ----
+		-- The previous response has not yet been cleared
+		if inst.pending then
+			conn.message = "Request was not reset"
+			return "END"
+		end
 
 		-- Skeleton for client keep-alive
 		if not inst.method then
@@ -265,10 +169,10 @@ local function initialize(conn, inst)
 
 		-- Verify request
 		if not inst.endpoint then
-			-- TODO: Instead transition to the WAIT state
 			conn.message = "No endpoint for request"
 			return "END"
 		end
+		--------------------------
 
 		-- TODO: Verify host (might not be necessary technically)
 
@@ -279,22 +183,9 @@ local function initialize(conn, inst)
 			or inst.method == "PUT"
 		then -- NOP
 		else
-			conn.message = "Invalid request method: `" .. tostring(inst.method) .. "`"
+			conn.message = "Unsupported request method: `" .. tostring(inst.method) .. "`"
 			return "END"
 		end
-
-		-- Populate common headers
-		local headers = inst.headers or {}
-		if not headers["accept"] then
-			headers["accept"] = "*/*"
-		end
-		if inst.host and not headers["host"] then
-			headers["host"] = inst.host
-		end
-		-- TODO...
-
-		inst.headers = headers
-
 	end
 
 	-- Reset shared state components
@@ -303,12 +194,13 @@ local function initialize(conn, inst)
 	inst.status = inst.server and 400 or 0
 	inst.persistent = false
 
-	-- TODO: Flush the buffer on the chance we don't read it all
-	-- (Probably needs to move to right before we reply with a keep-alive: true)
+	-- TODO: Flush the buffer on the chance we didn't read it before
+	-- (Probably needs to move to right before a reply with keep-alive: true)
 	
 	-- Check traffic encryption
 	if inst.encryption == nil then
 		print("TODO: upgrade/downgrade TLS")
+		-- Something like: conn.socket:starttls()
 	end
 
 	-- Direct state machine according to client/server behavior
@@ -322,6 +214,18 @@ local function receive(conn, inst)
 	local _read = 0
 
 	inst.request = inst.request or {}
+	if not inst.pending then
+		inst.length = 0
+
+		-- TODO: We might not want to reset method and endpoint
+		inst.method = nil
+		inst.endpoint = nil
+		inst.headers = nil
+		inst.body = nil
+
+		-- The connection is now receiving data
+		inst.pending = true
+	end
 
 	if inst.length ~= 0 then
 		-- len > 0: Remaining content has known length
@@ -366,7 +270,7 @@ local function process(conn, inst)
 	if (inst.server and inst.endpoint)
 		or (not inst.server and inst.status > 0)
 	then
-		-- TODO: Handle the body (stored in inst.body not inst.request)
+		-- TODO: Handle the body (stored in inst.body not inst.request, see receive())
 		-- ^^(TODO consider moving that to inst.request since the inst.body should be used for "parsed" data?)
 		print(inst.body)
 
@@ -380,8 +284,8 @@ local function process(conn, inst)
 	if not _req then return "RECV" end
 
 	local matchstr =
-		inst.server and "^(%w+) (%S+) HTTP/(1%.[01])$"
-		or "^HTTP/(1%.[01]) (%d+)%s*(%a*)"
+		inst.server and "^(%w+) (%S+) HTTP/(1%.[01])$"	-- Matches: GET /index.html HTTP/1.0
+		or "^HTTP/(1%.[01]) (%d+)%s*(%a*)"				-- Matches: HTTP/1.0 200 OK
 	local a, b, c = _req:match(matchstr)
 	if not (a and b and c) then
 		conn.message = "Invalid request/status line"
@@ -398,37 +302,36 @@ local function process(conn, inst)
 
 		-- Status is guaranteed a number from the above match
 		inst.status = tonumber(b)
-
 	end
 
 	-- Process request/response headers
-	-- TODO: It may be prudent to always create a new table
-	inst.headers = inst.headers or {}
+	-- We pass in the old value so that we can expand upon a request (for future development)
+	inst.headers = headers.new(inst.headers)
 
-	local field = nil
+	local currentField = nil
 	local iter, state = ipairs(inst.request)
-	for _, line in iter, state, 1 do
+	for _, line in iter, state, 1 do -- Line 1 is the request line so skip it
+		-- TODO: Consider how to handle if headers.split would return nil, nil but
+		-- > not indicate an error (would this situation even ever exist?)
+
 		-- Break up the header line
-		-- TODO: This will fail for something like `Host:\nlocalhost:80`
-		-- ^^(just replace %s* with %s+ ?? - Check official standard)
-		local _field, content = line:match("^([^:]+):%s*(.-)%s*$")
-
-		-- Header fields may be split across lines
-		if _field then field = _field
-		else content = line end
-
-		-- Verify and insert the header field data
-		local valid = _parseHeader(inst.headers, field, content)
-		if not valid then
-			-- Status defaults to 400: BAD REQUEST
+		local field, content = headers.split(line)
+		if not content then
+			-- Malformed header - Refuse the connection
+			-- > Status defaults to 400: BAD REQUEST
 			conn.message = "Invalid header `" .. line .. "`"
 			return inst.server and "SEND" or "END"
 		end
+
+		currentField = field or currentField
+		inst.headers:insert(currentField, content)
 	end
 
 	-- Check for a body
-	local length = inst.headers["content-length"]
-	_, length = pcall(tonumber, length)
+	local length = nil
+	if inst.headers:search("content-length") then
+		length = inst.headers:get("content-length")
+	end
 
 	-- HTTP server
 	if inst.server then
@@ -436,6 +339,7 @@ local function process(conn, inst)
 		inst.length = length or 0
 
 	-- HTTP client
+	-- > 1XX, 204, and 304 all indicate no content from the server
 	elseif (inst.status < 200)
 		or (inst.status == 204)
 		or (inst.status == 304)
@@ -451,13 +355,20 @@ local function process(conn, inst)
 end
 
 local function command(conn, inst)
+	if not inst.server then
+		-- > HTTP client should never reach here
+		conn.message = "Invalid transition to command state"
+		return "END"
+	end
+
+	inst.pending = false
 	local method = inst.method
 
 	-- Handle server/OBS-frontend commands
 	if method == "POST" then
 		inst.action = "command" -- Response body will be JSON format
 
-		local commands = inst.headers["command"]
+		local commands = inst.headers:get("command")
 		local output = {}
 		-- inst.request = "{ \"error\": \"" .. message .. "\" }"
 
@@ -481,16 +392,15 @@ local function command(conn, inst)
 		end
 
 		::command_send::
-		inst.request = "TODO command output" -- TODO: Table -> JSON
+		inst.body = "TODO command output" -- TODO: Table -> JSON
 		return "SEND"
 	end
 	
 	-- Check for websocket upgrade
-	local headers = inst.headers
 	if method == "GET" then
-		local connection = headers["connection"]
-		local upgrade = headers["upgrade"]
-		local wskey = headers["sec-websocket-key"]
+		local connection = inst.headers:get("connection")
+		local upgrade = inst.headers:get("upgrade")
+		local wskey = inst.headers:get("sec-websocket-key")
 		local shouldUpgrade = false
 
 		-- Ensure all conditions are met
@@ -600,93 +510,128 @@ local function command(conn, inst)
 	end
 
 	inst.action = "file" -- Response body will (should) be HTML format
-	inst.request = content
+	inst.body = content
 	inst.length = #content
 	return "SEND"
 end
 
 local function resolve(conn, inst)
 	local newline = "\r\n"
-	local payload = {}
-	local headers = inst.server and {} or inst.headers
+	local payload = {
+		status = nil,	-- Status line / Request line
+		headers = nil,
+		content = inst.body,
+	}
 
+	-- Verify state transition
+	local valid = true
+	repeat -- Use a block for early escape
+		if inst.pending then
+			valid = false
+			break
+		end
+
+		if inst.server then
+			-- Headers should be initialized
+			if not inst.headers then
+				valid = false
+				break
+			end
+
+			local _, htype = pcall(inst.headers.type)
+			if htype ~= "headers" then
+				valid = false
+				break
+			end
+		end
+
+	until true
+	if not valid then
+		conn.message = "Invalid transition to resolve state"
+		return "END"
+	end
+
+	-- Prepare the payload buffer
 	local protocol = "HTTP/" .. tostring(inst.version or 1.0)
 	if inst.server then
-		-- Build the status line
+		-- Server-side operation
 		local code = tostring(inst.status or 400)
-		table.insert(payload, protocol .. " "
+		payload.status = protocol .. " "
 			.. code .. " "
 			.. _codes["_" .. code]
-			.. newline )
+		payload.headers = headers.new()
 
 		-- Add relevant headers
 		if inst.action == "command" then
-			headers["command"] = table.concat(headers["command"], ", ")
+			payload.headers:insert("command", inst.headers:get("command"))
+
 		elseif inst.action == "upgrade" then
 			-- NOTE: Specifically use inst.headers here
-			local wsaccept = _wsGenerateAccept(inst.headers["sec-websocket-key"])
-			headers["connection"] = "Upgrade"
-			headers["upgrade"] = "websocket"
-			headers["sec-websocket-accept"] = wsaccept
+			local wsaccept = _wsGenerateAccept(inst.headers:get("sec-websocket-key"))
+
+			payload.headers:insert("Connection", "upgrade")
+			payload.headers:insert("Upgrade", "websocket")
+			print(wsaccept)
+			payload.headers:insert("Sec-WebSocket-Accept", wsaccept)
+			print(payload.headers:get("sec-websocket-accept"))
+
 		-- elseif inst.action == "file" then
+			-- TODO: Body headers
 		end
 	else
-		-- Build the request line
-		table.insert(payload, inst.method .. " "
+		-- Client-side operation
+		payload.status = inst.method .. " "
 			.. inst.endpoint .. " "
 			.. protocol
-			.. newline )
+		payload.headers = headers.new(inst.headers)
+
+		-- Populate common client headers
+		if not payload.headers:search("host") then
+			payload.headers:insert("Host", inst.host)
+		end
+		if not payload.headers:search("accept") then
+			-- TODO: Consider pulling */* from the header-specific API
+			payload.headers:insert("Accept", "*/*")
+		end
 	end
 
-	-- Check if a body should be sent
-	-- TODO: The check for "string" may now be extraneous
-	if (inst.length > 0) and (type(inst.request) == "string") then
-		if not headers["content-length"] then
-			headers["content-length"] = tostring(inst.length)
+	-- Check if a body should be attached
+	if inst.length <= 0 then
+		payload.content = nil
+
+	elseif payload.content then
+		-- Include the relevant headers
+		if not payload.headers:search("content-length") then
+			payload.headers:insert("content-length", inst.length)
 		end
-		if not headers["content-type"] then
-			headers["content-type"] =
-				(inst.action == "file") and "text/html" or
-				"application/json"
+		if not payload.headers:search("content-type") then
+			payload.headers:insert("content-type",
+				(inst.action == "file") and "text/html"
+					or "application/json")
 		end
 	end
 	
-	-- Attach headers to payload
-	for k, v in pairs(headers) do
-		table.insert(payload, k .. ": " .. v .. newline)
-	end
-
-	-- Addtional newline to seperate the request and body/end
-	table.insert(payload, newline)
-
-	-- Attach body to payload
-	if headers["content-type"] then
-		table.insert(payload, inst.request .. newline)
+	-- Send the payload
+	local data = payload.status
+		.. newline
+		.. payload.headers:dump(newline)
+		.. newline
+	if payload.content then
+		-- Append the body
+		data = data
+			.. payload.content
+			.. newline
 	end
 
 	-- Debugging: Print the prepared payload
 	-- print("--------")
-	-- print(table.concat(payload))
+	-- print(data)
 	-- print("--------")
 
-	-- Send the payload
-	local timeout = conn:send(table.concat(payload))
+	local timeout = conn:send(data)
 	if timeout then return nil end
 
-	if inst.server then return "FIN"
-	else
-		inst.length = 0
-
-		-- TODO: We might not want to reset method and endpoint
-		-- ^^Perhaps do this in the initialize func instead
-		-- (That said, I think I like this solution best)
-		inst.method = nil
-		inst.endpoint = nil
-		inst.headers = nil
-		inst.body = nil
-
-		return "RECV"
-	end
+	return inst.server and "FIN" or "RECV"
 end
 
 local function finalize(conn, inst)
@@ -699,9 +644,9 @@ local function finalize(conn, inst)
 
 	-- Connection "keep-alive"
 	-- TODO: Consider adding option if this should be respected
-	-- TODO: Check keep-alive header for requested expiration time
-	inst.persistent = inst.persistent or
-		(not inst.server) and _searchHeader(inst.headers, "connection", "keep-alive")
+	-- TODO: Check 'keep-alive' header for requested expiration time
+	inst.persistent = inst.persistent
+		or inst.headers:search("Connection", "keep-alive")
 	if inst.persistent and conn.expiration then
 		conn.expiration = util.time() + conn.lifetime
 		return "INIT"

@@ -1,10 +1,21 @@
 -- >>> headers.lua: Encoding/Decoding utilties for HTTP headers
 
 local api = {}
-local function _new()
-	-- TODO: Ensure that there is no risk of arbitrary code execution here!!!
+local function _new(init)
+	-- Headers can be initialized from a basic table
+	if init then
+		local _, argtype = pcall(init.type)
+		if argtype == "headers" then
+			-- Argument QOL - Return early if we already have a headers type
+			return init
+		end
+		
+		assert(type(init) == "table")
+	end
+
 	local data = {}
 	local proxy = {}
+	-- TODO: Ensure that there is no risk of arbitrary code execution here!!!
 	setmetatable(proxy, {
 		__index = function(tbl, key)
 			-- if not key then return nil end
@@ -26,65 +37,88 @@ local function _new()
 			return #data end,
 	})
 
-	local obj = { _data = proxy }
-	setmetatable(obj, { __index = api })
+	-- data - Houses all field->value pairs within the header
+	-- proxy - Links to data to translate accesses (to implement case-insensitivity)
+	-- inst - Exposes an API that applies header-specific closures to the data returned by proxy
+	local inst = { _data = proxy }
+	setmetatable(inst, { __index = api })
 
-	return obj
+	-- Populate the headers object with the init table
+	if init then
+		for field, datastr in pairs(init) do
+			-- Idiot-proof on the chance one uses headers:new() instead of headers.new()
+			assert(not datastr or type(datastr) == "string")
+			inst:insert(field, datastr)
+		end
+	end
+
+	return inst
 end
 
 
 -- >> UTILITY FUNCTIONS <<
-function split()
-	-- TODO
-end
+local function _split(linestr)
+	local field = nil
 
--- Splits and validates the fields of a header
--- TODO: Refers to the header table for specific header rules
--- Returns a boolean if header is valid
--- local function _parseHeader(headers, field, content)
--- 	if not field then return false end
---
--- 	-- Bad request if a header has a space before the colon
--- 	if field:match("%s$") then return false
--- 	else field = field:lower() end
---
--- 	local valid = false
--- 	local data = headers[field]
--- 	local rule = _headers[field] or function(d, c)
--- 		-- "Default" operation is to assume a list of comma and/or space-seperated entries
--- 		local _data = d or {}
---
--- 		-- No change does not invalidate header
--- 		if not c then return true, d end
---
--- 		-- TODO: Better default; perhaps specify delimiter (comma, semicolon, etc) and/or datatype
--- 		for directive in (c .. "\n"):gmatch("([^%s]-)[,;%s]+") do
--- 			-- TODO: Ensure duplicates are not being added
--- 			table.insert(_data, directive)
--- 		end
--- 		return true, _data
--- 	end
---
--- 	valid, data = rule(data, content)
--- 	headers[field] = data
---
--- 	return valid
--- end
+	-- Headers can extend multiple lines if preceeded with a space or tab
+	local content = linestr:match("^%s+(.+)$")
+	if not content then
+		-- New field, first break at the colon
+		-- TODO: Determine if we need to handle special characters
+		field, content = linestr:match("^(.-):(.*)$")
+		if not field
+			or field:match("%s")
+		then
+			-- Invalid header format
+			return nil, nil
+		end
+	end
+
+	-- Trim whitespace from content
+	content = content and content:match("^%s*(.-)%s*$")
+	return field, content
+end
 
 
 -- >> PARSING FUNCTIONS <<
--- These functions are called during table creation to return a paramaterized closure
+-- These functions are called at init to construct a paramaterized closure
+-- string -> <parsed type>
+
+-- Single string value
+--- default: On an empty string, use this value instead
+--- match: Lua 'regex' to compare the string with
+local function _strParser(default, match)
+	-- Paramter validation
+	assert((default == nil) or (type(default) == "string"))
+	assert((match == nil) or (type(match) == "string"))
+
+	-- Parsed type: String (trivial)
+	return function(_datastr)
+		-- Stored data must be a non-empty string
+		if type(_datastr) ~= "string"
+			or (#_datastr == 0)
+		then
+			return nil
+		end
+
+		if match then
+			_datastr = _datastr:match(match)
+		end
+		return _datastr
+	end
+end
 
 -- Single numerical value
 --- rangeMin: Smallest allowable value (inclusive)
 --- rangeMax: Largest allowable value (inclusive)
---- default: On invalid value, use this value instead of failing
+--- default: When data is invalid, use this value instead
 local function _numParser(rangeMin, rangeMax, default)
 	-- Paramter validation
-	assert(not rangeMin or (type(rangeMin) == "number"))
-	assert(not rangeMax or (type(rangeMax) == "number"))
-	assert(not default or (type(default) == "number"))
+	assert((rangeMin == nil) or (type(rangeMin) == "number"))
+	assert((rangeMax == nil) or (type(rangeMax) == "number"))
+	assert((default == nil) or (type(default) == "number"))
 
+	-- Parsed type: Number
 	return function(_data)
 		local _, val = pcall(tonumber, _data)
 		
@@ -101,60 +135,58 @@ local function _numParser(rangeMin, rangeMax, default)
 		val = val or default
 		
 		-- Convert the number to a string, or return nil
-		return val and tostring(val)
-	end
-end
-
--- Single string value
---- default: On an empty string, use this value instead
-local function _strParser(default)
-	return function(_data)
-		local val = _data
-		if val then
-			if type(val) ~= "string" then
-				val = tostring(val)
-			end
-
-			if #val == 0 then
-				val = nil
-			end
-		end
-
-		return val or default
+		return val
 	end
 end
 
 -- List of values
 --- delimiter: String to determine the next element (lua match)
---- validation: Closure to transform the parsed value
-local function _listParser(delimiter, validation)
-	assert(not validation or (type(validation) == "function"))
-	if (type(delimiter) ~= "string")
-		or (#delimiter == 0)
+--- validation: Closure to transform the parsed value (string -> string/nil)
+--- > Returns the transformed item or nil
+local function _listParser(delimiters, validation)
+	-- Paramter validation/defaulting
+	assert((validation == nil) or (type(validation) == "function"))
 
 	-- Default to commas, semicolons, or whitespace
-	then delimiter = ",;%s" end
+	delimiters = delimiters or "[,;%s]"
+	if type(delimiters) == "string" then
+		delimiters = { delimiters }
+	end
+	assert((type(delimiters) == "table") and (#delimiters > 0))
+	for _, _delim in ipairs(delimiters) do
+		assert((type(_delim) == "string") and (#_delim > 0))
+	end
 
+	-- Parsed type: List
 	return function(_data)
-		if not _data then
+		-- Check for the parsed type
+		if type(_data) == "table" then
+			-- Verify that the table contains a "list" portion
+			-- > If the iterator from ipairs() called at the initial
+			-- > value returns nil, then the "list portion" is empty
+			local iter, tbl, idx = ipairs(_data)
+			return iter(tbl, idx) and _data
+
+		-- Else data must be a non-empty string
+		elseif type(_data) ~= "string"
+			or (#_data == 0)
+		then
 			return nil
 		end
 
-		-- Ensure that _data is a string
-		-- TODO: Consider using an assert here
-		-- TODO: Handle case when _data is already a table
-		if type(_data) ~= "string" then
-			_data = tostring(_data)
+		-- Match every delimiter sequence and replace it with a known but non-standard
+		-- character that serves as a substitution marker (0x1A)
+		local marker = string.char(0x1A)
+		local transform = _data .. marker
+		for _, delimiter in ipairs(delimiters) do
+			transform = transform:gsub("(" .. delimiter .. ")", marker)
 		end
 
-		local list = {}
-
 		-- Match a sequence of characters as short as possible, leaving the
-		-- capture as soon as a character from the delimiter set is found
-		-- TODO: Consider adding support for delimiters of more than a single character
-		-- ^^This would have to be accomplished by doing a substitution to a known value
-		--   followed by a second* pass that globs with the known value
-		for item in (_data .. "\n"):gmatch("(.-)[" .. delimiter .. "]+[%s]*") do
+		-- capture as soon as the substitute character (0x1A) is found
+		-- > Also skip leading and trailing spaces
+		local list = {}
+		for item in transform:gmatch("%s*(.-)[" .. marker .. "]+%s*") do
 			if validation then
 				item = validation(item)
 			end
@@ -164,47 +196,118 @@ local function _listParser(delimiter, validation)
 			end
 		end
 
-		if #list == 0 then
-			-- if default then
-			-- 	table.insert(list, default)
-			--
-			-- else return nil end
-			return nil
-		end
-		
-		return list
+		return (#list > 0) and list
+			or nil
 	end
 end
 
 -- Key/Value parameter string
 -- TODO: Refactor this according to the needs of HTTP
---- init: Table to initalize with
-local function _paramParser(init)
-	assert(false, "TODO: _paramHeader header parser")
-	if not init then
-		init = {}
+--- header: String representing the type of the header (for validation)
+--- init: Table of default values
+--- parse: Iterator for the data string that returns key-value pairs
+local function _tableParser(header, init, parse)
+	-- Paramter validation/defaulting
+	assert(type(header) == "string") -- Cannot be nil
+	assert((init == nil) or (type(init) == "table"))
+	if parse then assert(type(parse) == "function")
+	else
+		parse = function(s)
+			local iter = s:gmatch("%s*([^;]+);*")
+
+			-- gmatch iterator stores the state in its closure so it ignores arguments
+			return function()
+				local _match = iter()
+				if not _match then return nil end
+
+				local key, value = _match:match("(%S+)=(%S+)")
+				if not key then
+					key = "_value"
+					value = _match
+				end
+				return key, value
+			end
+		end
 	end
 
-	-- TODO
-	return function()
-		local params = _listParser()
-		-- for _ in params ...
-		return init
+	-- Parsed type: Table
+	return function(_datastr)
+		-- Check for the parsed type
+		if type(_datastr) == "table" then
+			local valid = (_datastr["_header"] == header)
+			-- TODO: Consider checking all keys in init
+			return valid and _datastr
+				or nil
+
+		elseif type(_datastr) ~= "string"
+			or (#_datastr == 0)
+		then
+			return nil
+		end
+
+		-- Prepare the table that will be returned
+		local data = {
+			_header = header,
+			_error = nil, -- Currently unused, placeholder for validation routine
+			_value = nil, -- Key for the non-parameter component of the data
+		}
+		if init then
+			-- Copy initialization data into the new data table
+			for k, v in pairs(init) do
+				data[k] = v
+			end
+
+			-- TODO: Disallow any other entries into the table
+			setmetatable(data, { __newindex = nil })
+		end
+
+		for key, value in parse(_datastr) do
+			data[key] = value
+			-- TODO: If adding validation, consider putting that functionality here
+		end
+
+		return data
 	end
 end
 
 
 -- >> BUILDER FUNCTIONS <<
 -- Used by api:create() functionality
+-- <parsed type>, <parsed type> -> <parsed type>
+
+-- Header builder that replaces the current value
+-- Not restricted to strings
+--- accept: Closure to determine if the original value should be replaced
+--- > Returns the chosen value (parsed type, parsed type -> parsed type)
+local function _replaceBuilder(accept)
+	if accept then assert(type(accept) == "function")
+	else
+		accept = function(c, n) return n end
+	end
+
+	return function(_current, _new)
+		if not _new then
+			-- No value to update
+			return _current
+		end
+
+		if not _current then
+			-- New value guaranteed
+			return _new
+		end
+
+		return accept(_current, _new)
+			or _current
+	end
+end
 
 -- Header builder that extends the current string value
 -- Example: An 'Accept' header that spans multiple lines
--- TODO: We may wish to assert that _current is a string (instead of waiting for a crash)
 --- join: Specifies a string used to join the old and new values
 local function _appendBuilder(join)
 	join = join or " "
 	return function(_current, _new)
-		_new = _new and tostring(_new)
+		-- _new = _new and tostring(_new)
 		if not _new or (#_new == 0) then
 			-- No value to append
 			return _current
@@ -224,32 +327,44 @@ local function _appendBuilder(join)
 end
 
 -- Builder that joins two lists
--- TODO: Use a table instead of a list so that duplicates will not be inserted
---- join: Specifies a string used to join the table
---- insert: Closure that returns a transformation of the value that should be inserted (or nil)
-local function _listBuilder(join, insert)
+--- insert: Closure that builds a list from a key table (table -> table)
+local function _listBuilder(insert)
 	if insert then assert(type(insert) == "function")
 	else
-		insert = function(v) return v end
+		insert = function(_set)
+			local list = {}
+			for key, _ in pairs(_set) do
+				table.insert(list, key)
+			end
+		end
 	end
 
 	-- TODO: Refactor such that we build a parent table from both lists
 	--	using the values as keys, and then return a "list" from those keys
 	--	in order to remove duplicates
 	return function(_current, _new)
-		if not _new then
-			-- No value to insert
-			return (_current ~= nil)
-				and table.concat(_current, join)
-				or nil
+		if type(_current) == "table"
+			and (#_current > 0)
+		then
+			-- A populated table already exists
+			-- Base case?
+			if not _new then
+				-- return table.concat(_current, join)
+				return _current
+			end
+		else
+			-- _new is the initial value
+			return _new or _current -- Reuse the empty table if it already exists
+			-- return _new and table.concat(_new, join)
+			--	or _current
 		end
 
-		if not _current then
-			-- _new will be the initial value
-			-- (And we've already asserted that this value is a table)
-			return table.concat(_new, join)
+		-- Both tables exist, perform the join
+		-- Set all list values as keys of a table...
+		local set = {}
+		for _, val in ipairs(_current) do
+			set[val] = true -- Arbitrary temp value
 		end
-
 		for _, val in ipairs(_new) do
 			-- TODO: Consider allowing insertion at a specific index
 			-- TODO: insert() may demand more (or different) context than _current
@@ -257,43 +372,104 @@ local function _listBuilder(join, insert)
 				val = insert(val)
 			end
 			if val then
-				table.insert(_current, val)
+				set[val] = true
 			end
 		end
 
-		return table.concat(_current, join)
-	end
-end
-
--- Header builder that replaces the current value
--- Not restricted to strings
---- accept: Closure to determine if the original value should be replaced
-local function _replaceBuilder(accept)
-	if accept then assert(type(accept) == "function")
-	else
-		accept = function() return true end
-	end
-
-	return function(_current, _new)
-		if not _new then
-			-- No value to update
-			return _current
-		end
-
-		if not _current then
-			-- New value guaranteed
-			return _new
-		end
-
-		return accept(_current, _new)
-			and _new
-			or _current
+		-- and then pull the keys into a new list
+		-- > This avoids duplicate entries
+		local list = insert(set)
+		return list
 	end
 end
 
 -- Header builder for complex headers with key->value pairs
--- (TODO)
-local function _tableBuilder()
+--- merge: Closure that performs the table join (table, table -> nil)
+local function _tableBuilder(merge)
+	if merge then assert(type(merge) == "function")
+	else
+		-- Use a trivial table join operation
+		merge = function(base, update)
+			-- Assume that current is newindex-restricted to the appropriate form
+			for key, val in pairs(update) do
+				-- Do not copy over meta values (begins with _)
+				if val and not key:match("^_") then
+					base[key] = val
+				end
+			end
+		end
+	end
+
+	return function(_current, _new)
+		if type(_current) == "table" then
+			-- A populated table already exists
+			-- Base case?
+			if not _new then
+				return _current
+			end
+		else
+			-- _new is the initial value
+			return _new
+		end
+
+		-- Both tables exist, perform the join
+		merge(_current, _new)
+		return _current
+	end
+end
+
+
+-- >> ENCODER FUNCTIONS <<
+-- Used by api:create() functionality
+-- <parsed type> -> string
+
+-- Basic table.concat wrapper
+--- join: Specifies a string used to join the table
+local function _listEncoder(join)
+	join = join or ""
+	assert(type(join) == "string")
+
+	return function(_data)
+		if type(_data) ~= "table" then
+			assert(false) -- TODO: Not sure if I should have this here or not
+			return nil
+		end
+
+		return table.concat(_data, join .. " ")
+	end
+end
+
+-- Parameter table encoder
+-- TODO: Consider parsed type validation
+--- default: Default value for the non-parameter component
+local function _tableEncoder(default)
+	if default then assert(type(default) == "string")
+	else
+		default = ""
+	end
+
+	return function(_parsed)
+		if type(_parsed) ~= "table" then
+			assert(false) -- TODO: Not sure if I should have this here or not
+			return nil
+		end
+		local value = _parsed["_value"] or default
+		-- if type(value) ~= "string"
+		--	or (#value == 0)
+		-- then
+		--	return nil
+		-- end
+
+		for k, v in pairs(_parsed) do
+			if v and not k:match("^_") then
+				value = value .. "; " .. k .. "=" .. v
+			end
+		end
+
+		-- Remove leading '; ' if no non-parameter component
+		value = value:match("^;%s(.*)") or value
+		return value
+	end
 end
 
 -- >> VERIFICATION FUNCTIONS <<
@@ -306,68 +482,122 @@ local function _nilVerify()
 	end
 end
 
+-- Check for any header parsing-related failures
+local function _parseVerify()
+	return function(_datastr)
+		-- TODO
+		-- get the parser function
+		-- run the parser function
+		-- check the _error flag in the parsed type
+	end
+end
 
 -- >> HEADER TABLE <<
 -- Function table that maps header fields to their respective parsing rules
 local _headers = {
 	-- ["example"] = {
 	-- 	name = function() return "Example" end,
-	-- 	parse = function() end,
-	-- 	create = function() end,
-	-- 	validate = nil -- Can be nil
-	-- 	default = nil -- Default value if not present
+	-- 	default = nil -- Default value
+	-- 	parse = function(_str) end, -- Data string -> Parsed type
+	-- 	create = function(_parsedType) end, -- Parsed type -> Data string
+	--  insert = function(_curPT, _newPT) end, -- Update field data
+	-- 	validate = nil -- Skip if nil
 	-- },
 	["accept"] = {
 		name = function() return "Accept" end,
 		default = function() return "*/*" end,
-		parse = _listParser(",%s", function(_data)
-			-- TODO: Accept-specific parsing
-			-- https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Accept#syntax
-			return _data end),
-		create = _listBuilder(", "),
+
+		-- TODO: Accept-specific validation
+		-- https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Accept#syntax
+		parse = _listParser(","),
+		create = _listEncoder(","),
+		insert = _listBuilder(),
 	},
 	["connection"] = {
 		name = function() return "Connection" end,
-		parse = _strParser(),
-		create = _replaceBuilder(),
+		default = function() return "keep-alive" end,
+		parse = _listParser(","),
+		create = _listEncoder(","),
+		insert = _listBuilder(),
 	},
 	["content-length"] = {
 		name = function() return "Content-Length" end,
 		parse = _numParser(0, nil, 0),
-		create = _replaceBuilder(),
 	},
 	["content-type"] = {
 		name = function() return "Content-Type" end,
-		parse = _listParser(),
-		create = nil,
+		parse = _tableParser("content-type", {
+				-- type = nil,
+				-- subtype = nil,
+				charset = nil,
+				boundary = nil,
+			}),
+
+		create = _tableEncoder(),
+		-- function(_data)
+		--	local mtype = _data["type"]
+		--	if type(mtype) ~= "string"
+		--		or (#mtype == 0)
+		--	then
+		--		return nil
+		--	end
+		--	local subtype = _data["subtype"]
+		--	local charset = _data["charset"]
+		--	local boundary = _data["boundary"]
+		--	local ret = mtype
+		--		.. (subtype and ("/" .. subtype) or "")
+		--		.. (charset and ("; charset=" .. charset) or "")
+		--		.. (boundary and ("; boundary=" .. boundary) or "")
+		--	return ret end,
+
+		insert = _tableBuilder(),
+		-- function(base, update)
+		--	if update["type"] then
+		--		base["type"] = update["type"]
+		--		base["subtype"] = update["subtype"]
+		--	end
+		--	base["charset"] = update["charset"]
+		--		or base["charset"]
+		--	base["boundary"] = update["boundary"]
+		--		or base["boundary"]
+		--	end),
 	},
 	["host"] = {
 		name = function() return "Host" end,
-		parse = _strParser(), -- TODO (validate host field)
-		create = nil,
+		parse = _strParser(nil, "^%a%S-%.%a+$"),
 	},
 	["keep-alive"] = {
 		name = function() return "Keep-Alive" end,
-		parse = _listParser(), -- TODO (parse keep alive)
-		create = nil,
+		parse = _tableParser("keep-alive", {
+				timeout = nil,
+				max = nil,
+			}),
+		create = _tableEncoder(),
+		insert = _tableBuilder(),
 	},
 	["sec-websocket-accept"] = {
 		name = function() return "Sec-WebSocket-Accept" end,
-		parse = _strParser(),
-		create = nil,
+		parse = _strParser(nil, "^" .. string.rep("[%w%+%-/]", 27) .. "=$"),
 	},
 	["sec-websocket-key"] = {
 		name = function() return "Sec-WebSocket-Key" end,
-		parse = _strParser(),
-		create = nil,
+		parse = _strParser(nil, "^" .. string.rep("[%w%+%-/]", 22) .. "==$"),
 	},
 	["upgrade"] = {
 		name = function() return "Upgrade" end,
-		parse = _listParser(",%s", function(_data)
-			-- TODO: Upgrade-specific parsing
-			-- https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Upgrade
-			return _data end),
-		create = nil,
+		-- TODO: Upgrade-specific parsing
+		-- https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Upgrade
+		parse = _listParser(","),
+		create = _listEncoder(","),
+		insert = _listBuilder(),
+	},
+	
+	--- NEON HEADERS ---
+	["command"] = {
+		name = function() return "Command" end,
+		parse = _listParser(","),
+		create = _listEncoder(","),
+		insert = _listBuilder(),
 	},
 }
 setmetatable(_headers, {
@@ -402,11 +632,13 @@ function api:get(field)
 	local data = self._data[field]
 	local props = _headers[field]
 
-	if not data then
+	-- Attempt to get the default value
+	if props and not data then
 		_, data = pcall(props.default)
 	end
-	if not data or not props then
-		-- A default value may not be defined
+
+	-- Nothing left to do if data is still nil
+	if not data then
 		return nil
 	end
 
@@ -417,42 +649,64 @@ function api:get(field)
 	return func(data)
 end
 
--- Search a list field for a specific value
---- field: Field to search
---- value: Value to search for
+-- Check if a value exists in a header
+-- Shared for all parsed types
+--- field: Target header field
+--- value: Value to search for (or nil to check the field for a non-nil value)
 --- case: Enable case-sensitivity for string values
 function api:search(field, value, case)
-	-- Parse the data at the requested field
-	-- We could just use self:get(field) but this will include the default value (if present)
+	-- Run the header parser on the target field
+	-- Avoid self:get() as this will include any default values
 	local data = self._data[field]
 	local props = _headers[field]
-	if not data or not props then return false
-	elseif props.parse then
+
+	if data and props and props.parse then
 		data = props.parse(data)
 	end
 
-	if case and type(value) == "string" then
-		value = value:lower()
+	if not data then
+		return false
+	elseif not value then
+		-- Target field exists
+		return true
 	end
 
+	-- Normalize the type of value
+	if type(value) == "string" then
+		value = case and value or value:lower()
+
+	elseif type(value) == "number" then
+		-- Acceptable - Nothing to do
+	
+	else
+		-- No comparison for table or function types (yet)
+		assert(false, "Cannot search for value of type `" .. type(value) .. "`")
+		return nil
+	end
+
+	-- Begin comparison
 	if type(data) == "string" then
 		data = case and data or data:lower()
-		return (data == value)
 	end
-		
-	if type(data) ~= "list" then
-		-- TODO: Consider if non-string values should be cast to strings
+
+	-- Additional `if` here to include numbers
+	if type(data) ~= "table" then
 		return (data == value)
 	end
 
-	-- Field contains a list, check all values
-	for _, v in ipairs(data) do
-		if not case and (type(v) == "string") then
-			v = v:lower()
+	-- Otherwise the parsed type is a list/table
+	-- Check if the value exists as a key
+	if data[value] ~= nil then
+		return true
+	end
+	
+	-- The value may exist within an array
+	for _, entry in ipairs(data) do
+		if not case and (type(entry) == "string") then
+			entry = entry:lower()
 		end
 
-		-- TODO: Consider if non-string values should be cast to strings
-		if v == value then
+		if entry == value then
 			return true
 		end
 	end
@@ -461,28 +715,36 @@ function api:search(field, value, case)
 end
 
 -- Insert data into the respective header field
--- Values passed to header create function will be ran through the header parser
+-- Accepts parsed or string types
+-- Returns an updated value of the parsed type
 --- field: Target field for the data
 --- ...: Parameters to pass to the header-specific create function
-function api:create(field, ...)
+local _fallbackInsert = _replaceBuilder()
+function api:insert(field, ...)
 	assert(field ~= nil, "Cannot create header with nil field")
 
 	local props = _headers[field] -- Header-specific closures from the global lookup table
 	local parse = nil
 	local create = nil
+	local insert = nil
 
-	-- Get the header-specific create/parse functions
+	-- Prepare the header-specific functions
 	if props then
 		parse = props.parse
 		create = props.create
-	end
-	if not create then
-		-- Fallback to list of strings
-		create = _appendBuilder()
+		insert = props.insert
 	end
 	if not parse then
-		-- Fallback to use the raw string data
+		-- No parser defined: Assume inputs are the expected parsed type
 		parse = function(_data) return _data end
+	end
+	if not create then
+		-- Fallback to trivial type conversion
+		create = tostring
+	end
+	if not insert then
+		-- Fallback to list of strings
+		insert = _fallbackInsert
 	end
 
 	-- Recursive function to pop arguments off the call stack
@@ -490,8 +752,9 @@ function api:create(field, ...)
 		local c = parse(_current)
 		local n = parse(_new)
 
-		local _data = create(c, n)
+		local _data = insert(c, n)
 		if _next == nil then
+			-- Base condition
 			return _data
 		end
 
@@ -501,11 +764,20 @@ function api:create(field, ...)
 	-- Retrieve the current data for this header field to init the operation
 	local current = self._data[field]
 	local new = builder(current, ...)
+	if not new then
+		return nil
+	end
+
+	-- Call header create to convert the parsed type into a data string
+	-- TODO: The dev may wish to know that this conversion failed
+	local _, data = pcall(create, new)
+	if not data then
+		return nil
+	end
 
 	-- Set the updated field data
-	if new then
-		self._data[field] = new
-	end
+	self._data[field] = data
+	return new
 end
 
 -- Dump a header table into a string (generally for HTTP communication)
@@ -567,6 +839,7 @@ end
 
 local module = {
 	new = _new,
+	split = _split,
 }
 
 return module
