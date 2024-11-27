@@ -1,6 +1,7 @@
 -- >>> http.lua: HTTP server state machine for connection objects
 
-local util = require("lib.util")
+local shared = require("lib.util")
+local util = require("lib.util.http")
 local headers = require("lib.http.headers")
 
 -- HTTP status codes
@@ -45,7 +46,6 @@ local function _newInstance(args)
 	-- Clients will start with their request populated
 	-- TODO: Consider using args.host as the client condition instead
 	local _server = not args.method
-	-- local _headers = args.method and headers.new(args.headers) or nil
 
 	local inst = {
 		-- Client arguments
@@ -58,7 +58,7 @@ local function _newInstance(args)
 		-- Behavior
 		server = _server, -- Assume server unless a request is populated
 		version = nil, -- Might be unnecessary? (unless we want to support 2.0)
-		encryption = nil, -- "TLS" otherwise
+		encryption = args.encryption, -- TLS context object or nil
 		persistent = false, -- Keep the connection alive
 		
 		-- Connection state
@@ -78,55 +78,6 @@ local function _newInstance(args)
 	return inst
 end
 
-
--- >> UTILITY <<
-
--- Opens a file via Lua's IO API
--- If the path doesn't exist, then attempt the provided extension
--- If the path is a directory, open the index instead
--- Returns the file object or nil, and the type
-local function _openFile(path, ext)
-	local file = nil
-	local status = nil
-	local content = nil
-
-	-- NOTE: This will recursively check directories whose children are named "index.html"
-	while true do
-		-- Check that the file exists
-		file = io.open(path, "rb")
-		if not file then
-			if type(ext) == "string" then
-				file = _openFile(path .. "." .. ext, nil)
-				return file, status
-			end
-			return nil, status or "NONE"
-		end
-
-		-- Content is nil if file is a directory
-		local content = file:read(0)
-		if content then
-			return file, status or "FILE"
-		end
-
-		file:close()
-		path = path .. "/index.html"
-		ext = nil
-		status = "DIR"
-	end
-end
-
--- Generates the key necessary for Sec-WebSocket-Accept in the server response handshake
-local function _wsGenerateAccept(key)
-	if not key or key == "" then return nil end
-
-	-- Pre-hash key
-	-- TODO: Ensure that the input key has all padding spaces removed
-	local accept = key .. "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-	local hashed = util.hash(accept)
-	return util.encode(hashed)
-end
-
--- TODO: Helper function that breaks a URL into the protocol, host, and endpoint
 
 -- >> TRANSITIONS <<
 
@@ -198,9 +149,45 @@ local function initialize(conn, inst)
 	-- (Probably needs to move to right before a reply with keep-alive: true)
 	
 	-- Check traffic encryption
+	-- TODO: Handle HTTP upgrade redirects
+	-- TODO: Server-side does not check for a client hello
+	-- > It only matches "<method> <endpoint> <version>" so the connection hangs
 	if inst.encryption == nil then
-		print("TODO: upgrade/downgrade TLS")
-		-- Something like: conn.socket:starttls()
+		local context = nil
+		if inst.server then
+			-- TODO: Server - Obtain an SSL context (read/generate certificate)
+			-- > Currently server connections must be upgraded "manually" before starting the state machine
+
+		else
+			-- Try to upgrade
+			local status, errmsg = pcall(conn.socket.starttls, conn.socket, context)
+			if not status then
+				conn.message = "Failed to upgrade to TLS"
+				return "END"
+
+				-- Alternatively, respawn the connection
+				-- > There might be a way to reset the TLS context without completely
+				-- > resetting it, but this fallback is not currently in place
+
+				-- conn.sock = cqsock.connect(conn.host, _port)
+
+				-- Further note that enabling the above and then also obeying
+				-- HTTP redirects could lead into a two-state recursion condition
+				-- when the server redirects to use HTTPS but then the upgrade
+				-- to TLS fails.
+			end
+
+			inst.encryption = conn.socket:checktls()
+			if not inst.encryption then
+				conn.message = "Failed to upgrade to TLS"
+				return "END"
+			end
+
+			-- TODO: Verify the authenticity of the certificate
+			print("TODO: Verify client TLS certificate!")
+			-- https://github.com/daurnimator/lua-http/discussions/218
+			-- https://github.com/daurnimator/lua-http/blob/ee3cf4b4992479b8ebfb39b530694af3bbd1d1eb/http/tls.lua#L754
+		end
 	end
 
 	-- Direct state machine according to client/server behavior
@@ -374,14 +361,16 @@ local function command(conn, inst)
 
 		-- Verify server has an API
 		if not inst.api then
-			output["error"] = "Server commands not implemented"
+			inst.status = 501
+			output["error"] = "Command API not configured"
 			conn.message = output["error"]
 			goto command_send
 		end
 
 		-- Process the command(s)
 		if not commands or #commands == 0 then
-			output["error"] = "Received POST with no command(s) specified"
+			inst.status = 400
+			output["error"] = "POST request with no command provided"
 			conn.message = output["error"]
 			goto command_send
 		end
@@ -391,41 +380,34 @@ local function command(conn, inst)
 			output[cmd] = "boobies"
 		end
 
+		-- Command execution successful
+		inst.status = 200
+
 		::command_send::
 		inst.body = "TODO command output" -- TODO: Table -> JSON
 		return "SEND"
 	end
 	
-	-- Check for websocket upgrade
 	if method == "GET" then
 		local connection = inst.headers:get("connection")
 		local upgrade = inst.headers:get("upgrade")
 		local wskey = inst.headers:get("sec-websocket-key")
 		local shouldUpgrade = false
 
-		-- Ensure all conditions are met
+		-- Check for websocket upgrade
+		-- > TODO: Refactor control flow with added header functionality
 		if not (connection and upgrade and wskey) then
 			goto no_upgrade
-		end
 
-		for _, option in ipairs(connection) do
-			-- TODO: Consider adding a break, but possibly at the cost of readability
-			if option:lower() == "upgrade" then
-				shouldUpgrade = true
-			end
-		end
-
-		-- `Connection: Upgrade` was not in the headers
-		if not shouldUpgrade then
+		elseif not inst.headers:search("connection", "upgrade") then
+			-- `Connection: Upgrade` was not in the headers
 			goto no_upgrade
 		end
 
-		for _, protocol in ipairs(upgrade) do
-			if protocol:lower() == "websocket" then
-				inst.action = "upgrade"
-				inst.status = 101
-				return "SEND"
-			end
+		if inst.headers:search("upgrade", "websocket") then
+			inst.status = 101
+			inst.action = "upgrade"
+			return "SEND"
 		end
 	elseif method == "HEAD"
 	then -- NOP
@@ -474,7 +456,7 @@ local function command(conn, inst)
 	-- )
 
 	-- Open the requested file
-	local file, type = _openFile(inst.path .. endpoint, ext or "html")
+	local file, type = util.openFile(inst.path .. endpoint, ext or "html")
 	if not file then
 		if type == "DIR" then
 			-- Path exists, but there is no content available
@@ -567,13 +549,8 @@ local function resolve(conn, inst)
 
 		elseif inst.action == "upgrade" then
 			-- NOTE: Specifically use inst.headers here
-			local wsaccept = _wsGenerateAccept(inst.headers:get("sec-websocket-key"))
-
-			payload.headers:insert("Connection", "upgrade")
-			payload.headers:insert("Upgrade", "websocket")
-			print(wsaccept)
-			payload.headers:insert("Sec-WebSocket-Accept", wsaccept)
-			print(payload.headers:get("sec-websocket-accept"))
+			local wsaccept = util.websocketAccept(inst.headers:get("sec-websocket-key"))
+			payload.headers:insert("sec-websocket-accept", wsaccept)
 
 		-- elseif inst.action == "file" then
 			-- TODO: Body headers
@@ -587,12 +564,30 @@ local function resolve(conn, inst)
 
 		-- Populate common client headers
 		if not payload.headers:search("host") then
-			payload.headers:insert("Host", inst.host)
+			payload.headers:insert("host", inst.host)
 		end
 		if not payload.headers:search("accept") then
 			-- TODO: Consider pulling */* from the header-specific API
-			payload.headers:insert("Accept", "*/*")
+			payload.headers:insert("accept", "*/*")
 		end
+		
+		-- Websocket upgrade
+		-- > TODO: Consider moving this to a client-specific state that
+		-- > preceedes SEND and handles client-specific processing like this
+		if payload.headers:search("upgrade", "websocket") then
+			local wskey = util.websocketKey()
+			payload.headers:insert("sec-websocket-key", wskey)
+
+			inst.action = "upgrade"
+		end
+	end
+
+	-- Check for protocol upgrade request
+	if inst.action == "upgrade" then
+		print("toes")
+		payload.headers:insert("connection", "upgrade")
+		print("boobs")
+		payload.headers:insert("upgrade", "websocket")
 	end
 
 	-- Check if a body should be attached
@@ -648,7 +643,7 @@ local function finalize(conn, inst)
 	inst.persistent = inst.persistent
 		or inst.headers:search("Connection", "keep-alive")
 	if inst.persistent and conn.expiration then
-		conn.expiration = util.time() + conn.lifetime
+		conn.expiration = shared.time() + conn.lifetime
 		return "INIT"
 	end
 

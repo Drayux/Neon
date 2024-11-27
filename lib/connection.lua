@@ -1,4 +1,4 @@
--- >>> connection.lua: Server/client connection handler
+-- >>> connection.lua: Server/client connection handler type
 
 local cqcore = require("cqueues")
 local cqcond = require("cqueues.condition")
@@ -78,8 +78,11 @@ function api:send(data)
 
 	local sent = 1
 	while sent <= #data do
-		local idx, status = self.socket:send(data, 1, #data, "fb")
-		if status == cqerno.EPIPE then return true end
+		local idx, status = self.socket:send(data, 1, #data, "bf")
+		-- NOTE: Previous check was `status == cqerno.EPIPE` for dead connection
+		if status and status ~= cqerno.EAGAIN then
+			return true
+		end
 
 		sent = sent + idx
 		if sent <= #data then
@@ -88,14 +91,20 @@ function api:send(data)
 		end
 	end
 
-	local flushed, status = self.socket:flush("n", 0)
+	-- TODO: Rework this to use the unabstracted flush routines
+	-- > Perhaps this is already handled for me via the send operation?
+	local flushed, status = self.socket:flush("n", 0.1)
 	while not flushed do
-		if status == cqerno.EPIPE then return true end
+		-- Checks for cqerno.EPIPE and cqerno.ETIMEDOUT
+		if status and status ~= cqerno.EAGAIN then
+			return true
+		end
 
 		local timeout = self.trigger:wait(self.socket)
 		if timeout then return true end
 
-		flushed, status = self.socket:flush("n", 0)
+		flushed, status = self.socket:flush("n", 0.1)
+		-- break
 	end
 	return false
 end

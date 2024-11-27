@@ -61,12 +61,11 @@ function server:module(mod)
 	-- 	.. " such that regardless of being a one-shot or loop, the parent server"
 	-- 	.. " can retrieve the necessary data. (Likely to be a function callback.)")
 
-	local _host = "drayux.com"
-	local _port = 443
-	-- local _host = "127.0.0.1"
-	-- local _port = 1085 -- 443
+	-- local _host = "httpbin.org"
+	-- local _port = 443
+	local _host = "127.0.0.1"
+	local _port = 1085 -- 443
 	local sock = cqsock.connect(_host, _port)
-	sock:starttls()
 
 	local conn = connection.new(sock, controller, self.timeout)
 	table.insert(self.connections, conn)
@@ -75,19 +74,19 @@ function server:module(mod)
 	local args = {
 		http = {
 			method = "GET",
-			endpoint = "/",
+			endpoint = "/headers",
 			host = _host,
+			encryption = {},
 			headers = {
-				-- connection = "Upgrade",
-				-- upgrade = "websocket",
+				connection = "Upgrade",
+				upgrade = "websocket",
 
 				-- TODO: (Important) Generate a random websocket accept key with the http headers utility
-				-- ["sec-websocket-key"] = "9RiU0WXT14zl6FTsNlPFXA==",
 			},
 		},
 	}
 
-	conn:run("http", args, self.timeout)
+	conn:run("http", args, self.trigger)
 	cqcore.poll()
 end
 
@@ -147,7 +146,7 @@ if clientMode then
 	server.running = true
 else 
 	controller:wrap(server.loop, server)
-	-- controller:wrap(_catchSIGINT, server.stop, server)
+	controller:wrap(_catchSIGINT, server.stop, server)
 end
 
 assert(controller:loop())
