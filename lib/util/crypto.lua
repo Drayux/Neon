@@ -73,8 +73,8 @@ function module.seed()
 		seed = (seed << 8) | string.byte(rand:read(1))
 	end
 
-	math.randomseed(seed)
 	rand:close()
+	math.randomseed(seed)
 end
 
 -- Generate a SHA-1 hash of a provided string

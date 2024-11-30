@@ -333,15 +333,19 @@ local function _listBuilder(insert)
 	else
 		insert = function(_set)
 			local list = {}
-			for key, _ in pairs(_set) do
-				table.insert(list, key)
+			-- Default to inserting everything that is true
+			for key, value in pairs(_set) do
+				if value then
+					table.insert(list, key)
+				end
 			end
+			return list
 		end
 	end
 
-	-- TODO: Refactor such that we build a parent table from both lists
-	--	using the values as keys, and then return a "list" from those keys
-	--	in order to remove duplicates
+	-- List join is performed by setting the values of each list as the key of a table
+	-- > This omits adding duplicate entries to the assembled list
+	-- TODO: Consider adding string case-sensitivity (maybe better suited for an overridden insert closure)
 	return function(_current, _new)
 		if type(_current) == "table"
 			and (#_current > 0)
@@ -366,14 +370,7 @@ local function _listBuilder(insert)
 			set[val] = true -- Arbitrary temp value
 		end
 		for _, val in ipairs(_new) do
-			-- TODO: Consider allowing insertion at a specific index
-			-- TODO: insert() may demand more (or different) context than _current
-			if insert then
-				val = insert(val)
-			end
-			if val then
-				set[val] = true
-			end
+			set[val] = true -- Arbitrary temp value
 		end
 
 		-- and then pull the keys into a new list

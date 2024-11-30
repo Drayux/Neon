@@ -50,6 +50,7 @@ local function _newInstance(args)
 	local inst = {
 		-- Client arguments
 		host = args.host,
+		wskey = nil, -- Stores a generated websocket key for verification
 
 		-- Server arguments
 		path = args.path,
@@ -144,8 +145,9 @@ local function initialize(conn, inst)
 	inst.length = #(inst.body or "")
 	inst.status = inst.server and 400 or 0
 	inst.persistent = false
+	inst.wskey = nil -- Client only so this could be moved
 
-	-- TODO: Flush the buffer on the chance we didn't read it before
+	-- TODO: Drop the read buffer on the chance we didn't read it before
 	-- (Probably needs to move to right before a reply with keep-alive: true)
 	
 	-- Check traffic encryption
@@ -567,7 +569,7 @@ local function resolve(conn, inst)
 			payload.headers:insert("host", inst.host)
 		end
 		if not payload.headers:search("accept") then
-			-- TODO: Consider pulling */* from the header-specific API
+			-- TODO: Consider pulling */* from the header-specific API - default()
 			payload.headers:insert("accept", "*/*")
 		end
 		
@@ -578,15 +580,15 @@ local function resolve(conn, inst)
 			local wskey = util.websocketKey()
 			payload.headers:insert("sec-websocket-key", wskey)
 
+			inst.wskey = wskey -- Save the key for verification later
 			inst.action = "upgrade"
 		end
 	end
 
 	-- Check for protocol upgrade request
+	-- TODO: Consider moving Upgrade: websocket since it is implied in the client
 	if inst.action == "upgrade" then
-		print("toes")
-		payload.headers:insert("connection", "upgrade")
-		print("boobs")
+		payload.headers:insert("connection", "Upgrade")
 		payload.headers:insert("upgrade", "websocket")
 	end
 
@@ -632,9 +634,23 @@ end
 local function finalize(conn, inst)
 	-- Websocket upgrade
 	if inst.action == "upgrade" then
-		-- print("upgrading to websockterino!! (636)")
+		if not inst.server then
+			-- Verify the key received from the server
+			-- TODO: This is a candidate for relocation (prior to setting inst.action = upgrade, which would also move)
+			local acceptRecv = inst.headers:get("sec-websocket-accept")
+			local acceptComp = util.websocketAccept(inst.wskey)
+			if not acceptRecv
+				or not acceptComp
+				or acceptRecv ~= acceptComp
+			then
+				-- Expected values do not match, terminate the connection
+				conn.message = "Failed websocket upgrade: mismatched Sec-WebSocket-Accpet"
+				return "END"
+			end
+		end
+
 		conn:swap("websocket", "START")
-		return nil
+		return nil -- Swap will set the new start as an interrupt state
 	end
 
 	-- Connection "keep-alive"

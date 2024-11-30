@@ -50,9 +50,18 @@ function module.websocketAccept(key)
 	return crypto.encode(hashed)
 end
 
--- TODO: Generates a client websocket key to request a protocol upgrade
+-- Generates a client websocket key to request a protocol upgrade
 function module.websocketKey()
-	return "9RiU0WXT14zl6FTsNlPFXA=="
+	local bytearr = {}
+	for i = 1, 16 do
+		-- TODO: This might be faster if we generate a 16 byte random
+		-- > and then iterate the bytes instead
+		bytearr[i] = math.random(0x00, 0xFF)
+	end
+
+	-- local key = "9RiU0WXT14zl6FTsNlPFXA=="
+	local key = crypto.encode(bytearr)
+	return key
 end
 
 return module
