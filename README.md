@@ -9,6 +9,18 @@ Avid users of Firebot may wonder what this project offers instead. Both Neon and
 
 \<**TODO:** Add pretty pictures\>
 
+## Implementation TODO List
+#### *This project is still in a pre-alpha state, and therefore has a number of components left to implement before it reaches its basic functionality. The following are the notable remaining features before the project may be considered to be in "alpha."*
+- TLS certificate authority verification
+- Integration with obslua
+- \> Settings UI for environment config
+- Command line interface (complete with environment arguments)
+- Server-side command processing
+- \> JSON encoding/decoding
+- \> Server commands to update the environment
+- Application unification module (aka merging messages from different endpoints as a websocket application for server-side operation)
+- \> Connection handler (max connections/shared state for AUM)
+
 # Dependencies
 - cqueues: Lua event handling and socket management [Artix/Arch package: `lua-cqueues`]  
 > [CQueues Homepage](https://25thandclement.com/~william/projects/cqueues.html)
@@ -20,7 +32,7 @@ Avid users of Firebot may wonder what this project offers instead. Both Neon and
 \<**TODO:** Something something run with OBS or command line params/env file (looks for OBS lua, else looks for env file, else looks for anything defined with params. Said params override OBS settings/env options.)\>
 
 # Overview
-\<**TODO:** Explain the components, how the server is the hub for all external connections, and how any webpage should connect to it via `wss://localhost`.\>
+\<**TODO:** Explain the components, how the server is the hub for all external connections, and how any webpage should connect to it via `ws://localhost`.\>
 
 The websocket between the server and connected pages will contain a unified event stream, such that each indiviual page need only make one websocket connection. All of said functionality takes place within the provided javascript scripts.
 

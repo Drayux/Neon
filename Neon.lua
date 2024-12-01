@@ -18,6 +18,8 @@ local util = require("lib.util")
 -- local field, content
 -- field, content = headers.split("Accept: */*")
 -- print(tostring(field), tostring(content))
+-- local json = require("lib.util.json")
+-- json.test()
 -- repeat return until true
 
 
