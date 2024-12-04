@@ -37,17 +37,13 @@ function grammar.json(data, pos)
 	parsed, nextpos = grammar.element(data, pos)
 
 	-- TODO: Check for parse errors
-	if not parsed then
-		print("parsing error probably")
-		return nil, pos
+	if not parsed
+		-- Check for extra characters
+		or nextpos <= #data
+	then
+		return nil, nextpos
 	else
-		pos = nextpos
-	end
-
-	-- TODO: Check for extra characters
-	-- > This will require an extra whitespace token
-	if pos <= #data then
-		print("looks like not all of the object was parsed")
+		pos = 0
 	end
 
 	return parsed, pos
@@ -58,22 +54,22 @@ function grammar.array(data, pos)
 	local nextpos = nil
 
 	_, nextpos = string.find(data, tokens.arrstart, pos)
-	pos = (nextpos or pos) + 1
 	if not nextpos then
 		return nil, pos
 	end
+	pos = nextpos + 1
 
 	-- Pass an empty table through (for output) to save resouces
-	-- TODO: Consider how to handle when the array is empty
 	local _array = {}
 	parsed, nextpos = grammar.elements(data, pos, _array)
 	if not parsed then
-		-- An error might have occurred
+		-- Parsing fails if no element follows a comma
 		if #_array > 0 then
-			return nil, pos
+			return nil, nextpos
 		end
 
-		-- Otherwise match any whitespace
+		-- Array empty - match any whitespace
+		parsed = _array
 		_, nextpos = string.find(data, tokens.whitespace, pos)
 		pos = (nextpos < pos) and pos
 			or nextpos + 1
@@ -82,34 +78,31 @@ function grammar.array(data, pos)
 	end
 
 	_, nextpos = string.find(data, tokens.arrend, pos)
-	pos = (nextpos or pos) + 1
 	if not nextpos then
 		return nil, pos
 	end
+	pos = nextpos + 1
 
-	return parsed or _array, pos
+	return parsed, pos
 end
 
 function grammar.elements(data, pos, parsed)
-	local _element = nil
+	local value = nil
 	local nextpos = nil
 	local fail = false
 
-	_element, nextpos, fail = grammar.element(data, pos)
-	pos = nextpos or pos
+	value, pos, fail = grammar.element(data, pos)
 	if fail then
 		return nil, pos
 	end
 
 	-- Insert the parsed value into the array
-	table.insert(parsed, _element)
-	-- parsed[#parsed + 1] = _element -- Alternative insertion approach
+	table.insert(parsed, value)
 
 	_, nextpos = string.find(data, tokens.comma, pos)
 	if nextpos then
 		-- Additional array elements are (should be) present
-		parsed, nextpos = grammar.elements(data, nextpos + 1, parsed)
-		pos = nextpos or pos
+		parsed, pos = grammar.elements(data, nextpos + 1, parsed)
 		if not parsed then
 			-- Propigate the parsing error up
 			return nil, pos
@@ -121,7 +114,7 @@ end
 
 function grammar.element(data, pos)
 	local parsed = nil
-	local nextpos = nilu
+	local nextpos = nil
 	local fail = false
 
 	_, nextpos = string.find(data, tokens.whitespace, pos)
@@ -145,10 +138,10 @@ function grammar.object(data, pos)
 	local nextpos = nil
 
 	_, nextpos = string.find(data, tokens.objstart, pos)
-	pos = (nextpos or pos) + 1
 	if not nextpos then
 		return nil, pos
 	end
+	pos = nextpos + 1
 
 	-- Pass an empty table through (for output) to save resouces
 	-- TODO: Consider how to handle when the array is empty
@@ -157,10 +150,11 @@ function grammar.object(data, pos)
 	if not parsed then
 		-- An error occurred if the table is not empty
 		if next(_obj) ~= nil then
-			return nil, pos
+			return nil, nextpos
 		end
 
-		-- Otherwise match any whitespace
+		-- Table empty - match any whitespace
+		parsed = _obj
 		_, nextpos = string.find(data, tokens.whitespace, pos)
 		pos = (nextpos < pos) and pos
 			or nextpos + 1
@@ -169,12 +163,12 @@ function grammar.object(data, pos)
 	end
 
 	_, nextpos = string.find(data, tokens.objend, pos)
-	pos = (nextpos or pos) + 1
 	if not nextpos then
 		return nil, pos
 	end
+	pos = nextpos + 1
 
-	return parsed or _obj, pos
+	return parsed, pos
 end
 
 function grammar.members(data, pos, parsed)
@@ -183,8 +177,7 @@ function grammar.members(data, pos, parsed)
 	local nextpos = nil
 	local fail = false
 
-	key, value, nextpos = grammar.member(data, pos)
-	pos = nextpos or pos
+	key, value, pos = grammar.member(data, pos)
 	if not key then
 		return nil, pos
 	end
@@ -195,8 +188,7 @@ function grammar.members(data, pos, parsed)
 	_, nextpos = string.find(data, tokens.comma, pos)
 	if nextpos then
 		-- Additional array elements are (should be) present
-		parsed, nextpos = grammar.members(data, nextpos + 1, parsed)
-		pos = nextpos or pos
+		parsed, pos = grammar.members(data, nextpos + 1, parsed)
 		if not parsed then
 			-- Propigate the parsing error up
 			return nil, pos
@@ -233,8 +225,7 @@ function grammar.member(data, pos)
 	end
 	pos = nextpos + 1
 
-	value, nextpos, fail = grammar.element(data, pos)
-	pos = nextpos or pos
+	value, pos, fail = grammar.element(data, pos)
 	if fail then
 		return nil, nil, pos
 	end
@@ -242,7 +233,9 @@ function grammar.member(data, pos)
 	return key, value, pos 
 end
 
-function grammar.value(data, pos)
+-- This is the old implementation, to be removed when the optimized
+-- > version is proven to function correctly
+function grammar._value(data, pos)
 	local parsed = nil
 	local nextpos = nil
 
@@ -295,36 +288,100 @@ function grammar.value(data, pos)
 	return nil, pos, true
 end
 
+function grammar.value(data, pos)
+	local parsed = nil
+	local nextpos = nil
+
+	-- Value types all have a unique first character, so we check for that here
+	-- > This allows us to provide a specific location during a parse failure,
+	-- > while also optimizing the token type checks.
+	-- > We can do this because the top-level element resolves to a value: (json -> element -> value)
+
+	local cursor = string.byte(data, pos)
+	-- print("pos", pos)
+	-- print("char", string.char(cursor))
+	-- print("val", cursor)
+
+	-- True - t (116)
+	if cursor == 116 then
+		_, nextpos = string.find(data, tokens._true, pos)
+		if nextpos then
+			return true, nextpos + 1, false
+		end
+
+	-- False - f (102)
+	elseif cursor == 102 then
+		_, nextpos = string.find(data, tokens._false, pos)
+		if nextpos then
+			return false, nextpos + 1, false
+		end
+
+	-- Null - n (110)
+	elseif cursor == 110 then
+		_, nextpos = string.find(data, tokens.null, pos)
+		if nextpos then
+			return nil, nextpos + 1, false
+		end
+
+	---- TODO: We can preempt the pos increment and remove the duplicate check
+	---- > from the specific token types
+
+	-- Array - [ (91)
+	elseif cursor == 91 then
+		parsed, pos = grammar.array(data, pos)
+
+	-- Object - { (123)
+	elseif cursor == 123 then
+		parsed, pos = grammar.object(data, pos)
+
+	-- String - " (34)
+	elseif cursor == 34 then
+		parsed, pos = grammar.string(data, pos)
+
+	-- Number - 0, 9 (48, 57)
+	elseif cursor >= 48
+		and cursor <= 57
+	then
+		parsed, pos = grammar.number(data, pos)
+	end
+
+	--------
+
+	if parsed then
+		return parsed, pos, false
+	end
+
+	return nil, pos, true
+end
+
 function grammar.string(data, pos)
 	local parsed = nil
 	local nextpos = nil
 
 	_, nextpos = string.find(data, tokens.quote, pos)
-	pos = (nextpos or pos) + 1
 	if not nextpos then
 		return nil, pos
 	end
+	pos = nextpos + 1
 
 	-- Pass an empty table through (for output) to save resouces
 	local _str = {}
-	parsed, nextpos = grammar.characters(data, pos, _str)
-	pos = nextpos or pos -- characters (should) always return non-nil
+	parsed, pos = grammar.characters(data, pos, _str) -- always returns non-nil
 
 	_, nextpos = string.find(data, tokens.quote, pos)
-	pos = (nextpos or pos) + 1
 	if not nextpos then
 		return nil, pos
 	end
+	pos = nextpos + 1
 
-	return table.concat(parsed or _str), pos
+	return table.concat(parsed), pos
 end
 
 function grammar.characters(data, pos, parsed)
 	local char = nil
 	local nextpos = nil
 
-	char, nextpos = grammar.character(data, pos)
-	pos = nextpos or pos
+	char, pos = grammar.character(data, pos)
 	if not char then
 		return parsed, pos
 	end
@@ -425,7 +482,7 @@ function grammar.number(data, pos)
 	-- Number cannot start with a zero unless the zero is by itself
 	_, nextpos = string.find(data, tokens.zero, pos)
 	if not nextpos then
-		-- Check for a series of digits instead
+		-- Check for a series of digits instead (typical flow)
 		_, nextpos = string.find(data, tokens.digits, pos)
 		if not nextpos then
 			-- Still no matches, fail
@@ -493,6 +550,28 @@ end
 -- Top-level parser routine
 -- > Lexes tokens and builds a lua table according to a simple grammar
 local function _decode(str)
+	if type(str) ~= "string" then
+		return nil, "Cannot parse non-string value as JSON"
+	end
+
+	local error = nil
+	local parsed, pos = grammar.json(str, 1)
+
+	if pos > 0 then
+		local _start = pos - 1
+		local _end = pos + 11
+
+		_start = (_start > 0) and _start or 1
+		_end = (_end <= #str) and _end or #str
+
+		error = "JSON parsing error near index "
+			.. tostring(pos)
+			.. " ("
+			.. string.sub(str, _start, _end)
+			.. ")"
+	end
+
+	return parsed, error
 end
 
 ---------------  ENCODE  ---------------
@@ -602,17 +681,21 @@ end
 local function _test2()
 	-- local data = "\"hello\\nworld\""
 	-- local data = "69.9e-9"
-	-- local data = "[[true, null, false], [], [true, false]]"
-	local data = "{\"toes\": \"titties\", \"balls\": [69420e-3, \"pussy\", false ], \"ass\"  :{}}"
-	local parsed = grammar.json(data, 1, {})
-	print("-----")
-	print(parsed)
-	-- print("big" .. parsed .. "toes")
-	for i, v in pairs(parsed) do
-		print("\t" .. tostring(i), v)
-		if type(v) == "table" then
-			for i2, v2 in ipairs(v) do
-				print("\t\t" .. tostring(v2))
+	local data = "[[true, null, false], [], [true, false]]"
+	-- local data = [[{"toes": "titties", "balls": [69420e-3, "pussy", false ], "ass"  :{}}]]
+	local parsed, pos = grammar.json(data, 1, {})
+	print("--------")
+	if not parsed then
+		print("pos:", pos)
+	else
+		print(parsed)
+		-- print("big" .. parsed .. "toes")
+		for i, v in pairs(parsed) do
+			print("\t" .. tostring(i), v)
+			if type(v) == "table" then
+				for i2, v2 in ipairs(v) do
+					print("\t\t" .. tostring(v2))
+				end
 			end
 		end
 	end
@@ -621,6 +704,7 @@ end
 local module = {
 	decode = _decode,
 	encode = _encode,
+	-- test = _test2,
 }
 return module
 

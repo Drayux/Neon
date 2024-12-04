@@ -26,7 +26,7 @@ Avid users of Firebot may wonder what this project offers instead. Both Neon and
 > [CQueues Homepage](https://25thandclement.com/~william/projects/cqueues.html)
 
 - **Unix-based operating system** (aka this does _not_ work on Windows)  
-> This isn't an effort to spite Windows users, merely an unfortuante effect of how the platforms differ with regard to networking events, as it pertains to the `cqueues` dependency
+> This isn't an effort to spite Windows users, merely an unfortunate effect of how the platforms differ in handling events within network sockets; pertaining to the `cqueues` dependency
 
 # Usage
 \<**TODO:** Something something run with OBS or command line params/env file (looks for OBS lua, else looks for env file, else looks for anything defined with params. Said params override OBS settings/env options.)\>

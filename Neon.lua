@@ -18,8 +18,18 @@ local util = require("lib.util")
 -- local field, content
 -- field, content = headers.split("Accept: */*")
 -- print(tostring(field), tostring(content))
+
 -- local json = require("lib.util.json")
 -- json.test()
+-- local data = [[{"hello": "world"}]]
+-- local parsed, err = json.decode(data)
+-- if err then
+-- 	print(err)
+-- end
+-- if parsed then
+-- 	print(json.encode(parsed))
+-- end
+
 -- repeat return until true
 
 
