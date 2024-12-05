@@ -5,7 +5,7 @@ local cqcond = require("cqueues.condition")
 local cqsock = require("cqueues.socket")
 local cqerno = require("cqueues.errno")
 
-local protocol = require("lib.protocol")
+local protocol = require("lib.connection.protocol")
 
 local api = {}
 local function _new(s, c, t)

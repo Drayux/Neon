@@ -3,7 +3,7 @@ local cqcond = require("cqueues.condition")
 local cqsock = require("cqueues.socket")
 local cqsgnl = require("cqueues.signal")
 
-local connection = require("lib.connection")
+local connection = require("lib.connection") -- TODO: Move inside of the server module (once created)
 local util = require("lib.util")
 
 
@@ -58,7 +58,7 @@ local server = {
 
 	-- These will become script arguments (TODO: port and various integrations)
 	timeout = 10,
-	rootdir = util.getcwd() .. "/pages",
+	rootdir = util.getcwd() .. "/overlay",
 	logging = true,
 
 	--
@@ -74,7 +74,7 @@ function server:module(mod)
 	-- 	.. " can retrieve the necessary data. (Likely to be a function callback.)")
 
 	-- local _host = "httpbin.org"
-	-- local _port = 443
+	-- local _port = 80
 	local _host = "127.0.0.1"
 	local _port = 1085 -- 443
 	local sock = cqsock.connect(_host, _port)

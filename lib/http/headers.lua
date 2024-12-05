@@ -56,30 +56,6 @@ local function _new(init)
 end
 
 
--- >> UTILITY FUNCTIONS <<
-local function _split(linestr)
-	local field = nil
-
-	-- Headers can extend multiple lines if preceeded with a space or tab
-	local content = linestr:match("^%s+(.+)$")
-	if not content then
-		-- New field, first break at the colon
-		-- TODO: Determine if we need to handle special characters
-		field, content = linestr:match("^(.-):(.*)$")
-		if not field
-			or field:match("%s")
-		then
-			-- Invalid header format
-			return nil, nil
-		end
-	end
-
-	-- Trim whitespace from content
-	content = content and content:match("^%s*(.-)%s*$")
-	return field, content
-end
-
-
 -- >> PARSING FUNCTIONS <<
 -- These functions are called at init to construct a paramaterized closure
 -- string -> <parsed type>
@@ -834,10 +810,6 @@ function api:validate()
 	return true
 end
 
-local module = {
-	new = _new,
-	split = _split,
-}
-
-return module
+-- Single function API
+return _new
 

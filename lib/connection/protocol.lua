@@ -1,7 +1,7 @@
 -- >>> protocol.lua: "Base" state machine to swap between others
 
 local function load(name)
-	local status, ret = pcall(require, "lib." .. name)
+	local status, ret = pcall(require, "protocols." .. name)
 
 	if type(ret) == "string" then
 		print(ret)

@@ -1,10 +1,9 @@
 -- >>> util.lua: Shared utility functions
 
 -- >> UTILITY MODULE <<
-local module = { time = require("cqueues").monotime }
--- module.crypto = require("lib.util.crypto")	-- Cryptography functions
--- module.json = require("lib.util.json")		-- JSON encoding/decoding
--- module.http = require("lib.util.http")		-- HTTP server subroutines
+local module = {
+	time = require("cqueues").monotime -- API forward
+}
 
 -- Byte-wise iterator of an input string
 -- Stateless, so this does not return a context
