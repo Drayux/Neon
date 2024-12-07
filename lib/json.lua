@@ -571,6 +571,7 @@ local function _decode(str)
 			.. ")"
 	end
 
+	-- TODO: Before returning, run "compressWhiteSpace on error"
 	return parsed, error
 end
 
@@ -649,7 +650,15 @@ local encodeTable; encodeTable = function(buf, tbl, depth)
 end
 
 -- Top-level encoder routine
+-- MAJOR TODO: Strings need to be encoded with escape sequences
 local function _encode(tbl)
+	local tbltype = type(tbl)
+	if tbltype ~= "table" then
+		-- TODO: Consider final version of this
+		assert(tbltype == "string" or tbl == nil, "Unsupported type for JSON encoding")
+		return tbl
+	end
+
 	local buf = {}
 	encodeTable(buf, tbl, 0)
 	

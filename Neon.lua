@@ -127,7 +127,16 @@ function server:loop()
 			local args = {
 				http = {
 					path = self.rootdir,
-					commands = nil,
+					-- commands = nil,
+					commands = {
+						["cock"] = function(params, output)
+								output["message"] = "nice"
+								-- return nil
+							end,
+						["balls"] = function(params, output)
+								return "cannot scratch balls sufficiently, try pinch and twist"
+							end,
+					},
 				},
 				websocket = {
 					interval = 120, -- Two minutes

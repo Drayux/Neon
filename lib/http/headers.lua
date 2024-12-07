@@ -687,6 +687,11 @@ function api:search(field, value, case)
 	return false
 end
 
+-- TODO: api:overwrite / "api:underwrite"
+-- > Instead of inserting (aka appending) to existing headers,
+-- > these functions would force the new value, or only write the value
+-- > if it was not already present
+
 -- Insert data into the respective header field
 -- Accepts parsed or string types
 -- Returns an updated value of the parsed type

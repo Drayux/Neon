@@ -93,5 +93,8 @@ function module.websocketKey()
 	return key
 end
 
+-- Process server-side API commands
+--
+
 return module
 

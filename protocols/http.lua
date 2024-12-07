@@ -1,7 +1,8 @@
 -- >>> http.lua: HTTP server state machine for connection objects
 
-local util = require("lib.util")
 local http = require("lib.http")
+local json = require("lib.json")
+local util = require("lib.util")
 
 
 -- >> STATE OBJECT <<
@@ -103,14 +104,20 @@ local function initialize(conn, inst)
 			conn.message = "Unsupported request method: `" .. tostring(inst.method) .. "`"
 			return "END"
 		end
+
+		-- Specify action type (for making API requests)
+		-- > TODO: This check could be improved by being moved elsewhere
+		if type(inst.body) == "table" then
+			-- Assume we want to convert the body into JSON
+			inst.action = "command"
+		end
 	end
 
 	-- Reset shared state components
 	inst.request = nil
-	inst.length = #(inst.body or "")
+	inst.wskey = nil -- Client only so this could be moved
 	inst.status = inst.server and 400 or 0
 	inst.persistent = false
-	inst.wskey = nil -- Client only so this could be moved
 
 	-- TODO: Drop the read buffer on the chance we didn't read it before
 	-- (Probably needs to move to right before a reply with keep-alive: true)
@@ -221,12 +228,15 @@ local function process(conn, inst)
 	-- TODO: Should we assume that this was called from a valid state?
 	-- AKA: inst.request needs to be a table or this will fail
 	
+	-- We use inst.endpoint to differentiate the state of the transmission
+	-- > TODO: For my state machine refactor, different "states" of the HTTP transmission
+	-- > should warrant unique states for the state machine itself
 	if (inst.server and inst.endpoint)
 		or (not inst.server and inst.status > 0)
 	then
 		-- TODO: Handle the body (stored in inst.body not inst.request, see receive())
 		-- ^^(TODO consider moving that to inst.request since the inst.body should be used for "parsed" data?)
-		print(inst.body)
+		-- print(inst.body)
 
 		-- <call body handler; passed in as server argument akin to the api>
 		return inst.server and "CMD" or "FIN"
@@ -309,49 +319,76 @@ local function process(conn, inst)
 end
 
 local function command(conn, inst)
+	inst.pending = false
 	if not inst.server then
 		-- > HTTP client should never reach here
 		conn.message = "Invalid transition to command state"
 		return "END"
 	end
 
-	inst.pending = false
-	local method = inst.method
+	-- TODO: Ensure that we reset inst.body
 
 	-- Handle server/OBS-frontend commands
+	local method = inst.method
 	if method == "POST" then
-		inst.action = "command" -- Response body will be JSON format
+		local params = inst.body
+		local error = nil
 
-		local commands = inst.headers:get("command")
-		local output = {}
-		-- inst.request = "{ \"error\": \"" .. message .. "\" }"
+		inst.body = {}
+		inst.action = "command" -- Response will be JSON (expect inst.body to be a table)
 
-		-- Verify server has an API
+		-- Verify the requested endpoint
+		-- > Request must be alphabet characters (i.e. no number, no symbols)
+		local command = inst.endpoint:match("^/(%a+)/?$")
+		if not command then
+			inst.status = 400
+			error = "Invalid command format: '" 
+				.. tostring(inst.endpoint) .. "'"
+			conn.message = error
+			inst.body["error"] = error
+			return "SEND"
+		end
+
+		-- Verify that the server has an API
 		if not inst.api then
 			inst.status = 501
-			output["error"] = "Command API not configured"
-			conn.message = output["error"]
-			goto command_send
+			error = "Server API not configured"
+			conn.message = error
+			inst.body["error"] = error
+			return "SEND"
 		end
 
-		-- Process the command(s)
-		if not commands or #commands == 0 then
-			inst.status = 400
-			output["error"] = "POST request with no command provided"
-			conn.message = output["error"]
-			goto command_send
-		end
-		
-		for cmd in commands do
-			-- TODO: Command handling
-			output[cmd] = "boobies"
+		-- Get parameters from the client
+		if params then
+			local contentType = inst.headers:get("content-type")
+			if not contentType or contentType["_value"] == "application/json" then
+				params, error = json.decode(params)
+			end
+
+			if error then
+				inst.status = 400
+				conn.message = error
+				inst.body["error"] = error
+				return "SEND"
+			end
 		end
 
-		-- Command execution successful
-		inst.status = 200
+		-- Core command execution
+		local status, message = pcall(inst.api[command:lower()], params, inst.body)
+		if status then
+			if message then
+				inst.status = 400
+				inst.body["error"] = message
+			else
+				inst.status = 200
+			end
+		else
+			inst.status = 501
+			error = "Command not supported"
+			conn.message = error
+			inst.body["error"] = error
+		end
 
-		::command_send::
-		inst.body = "TODO command output" -- TODO: Table -> JSON
 		return "SEND"
 	end
 	
@@ -460,7 +497,6 @@ local function command(conn, inst)
 
 	inst.action = "file" -- Response body will (should) be HTML format
 	inst.body = content
-	inst.length = #content
 	return "SEND"
 end
 
@@ -469,7 +505,7 @@ local function resolve(conn, inst)
 	local payload = {
 		status = nil,	-- Status line / Request line
 		headers = nil,
-		content = inst.body,
+		content = nil,
 	}
 
 	-- Verify state transition
@@ -512,12 +548,11 @@ local function resolve(conn, inst)
 
 		-- Add relevant headers
 		if inst.action == "command" then
-			payload.headers:insert("command", inst.headers:get("command"))
+			-- TODO: Consider command header expected operation
+			-- payload.headers:insert("command", inst.headers:get("command"))
 
 		elseif inst.action == "upgrade" then
 			-- NOTE: Specifically use inst.headers here
-			local wsaccept = http.websocketAccept(inst.headers:get("sec-websocket-key"))
-			payload.headers:insert("sec-websocket-accept", wsaccept)
 
 		-- elseif inst.action == "file" then
 			-- TODO: Body headers
@@ -551,25 +586,39 @@ local function resolve(conn, inst)
 	end
 
 	-- Check for protocol upgrade request
-	-- TODO: Consider moving Upgrade: websocket since it is implied in the client
 	if inst.action == "upgrade" then
+		-- TODO: Consider moving Upgrade: websocket since it is implied in the client
+		local wsaccept = inst.server
+			and http.websocketAccept(inst.headers:get("sec-websocket-key"))
+			or nil
+		payload.headers:insert("sec-websocket-accept", wsaccept)
 		payload.headers:insert("connection", "Upgrade")
 		payload.headers:insert("upgrade", "websocket")
-	end
 
 	-- Check if a body should be attached
-	if inst.length <= 0 then
-		payload.content = nil
+	-- > Websocket upgrade should not send a body
+	elseif inst.body then
+		local contentType = "text/plain"
+		if inst.action == "command" then
+			-- Body should be a table
+			contentType = "application/json"
+			payload.content = json.encode(inst.body)
 
-	elseif payload.content then
-		-- Include the relevant headers
-		if not payload.headers:search("content-length") then
-			payload.headers:insert("content-length", inst.length)
+		elseif inst.action == "file" then
+			-- TODO: This may need to be something else for a client
+			-- > OR....if we're sending javascript files
+			contentType = "text/html"
 		end
+
+		-- Insert content type header
 		if not payload.headers:search("content-type") then
-			payload.headers:insert("content-type",
-				(inst.action == "file") and "text/html"
-					or "application/json")
+			payload.headers:insert("content-type", contentType)
+			payload.headers:insert("content-type", "charset=utf-8")
+		end
+
+		-- Insert content length header
+		if not payload.headers:search("content-length") then
+			payload.headers:insert("content-length", #payload.content)
 		end
 	end
 	
