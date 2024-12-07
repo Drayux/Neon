@@ -66,7 +66,7 @@ local server = {
 	-- These will become script arguments (TODO: port and various integrations)
 	timeout = 10,
 	rootdir = util.getcwd() .. "/overlay",
-	logging = true,
+	logging = true, -- false
 
 	--
 	seed = util.seed, -- Function to seed the RNG
@@ -102,6 +102,11 @@ function server:module(mod)
 
 				-- TODO: (Important) Generate a random websocket accept key with the http headers utility
 			},
+		},
+		websocket = {
+			callback = function(data)
+					print("data:", data)
+				end,
 		},
 	}
 

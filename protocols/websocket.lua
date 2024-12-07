@@ -22,8 +22,9 @@ local function _newInstance(args)
 		_frame = nil,
 
 		pong = true,				-- Server has sent an unresolved ping (true if resolved/false if pending)
-		client = false,		-- Is this a websocket client or server
-		interval = args.interval,	-- Interval between ping events to the client
+		client = false, -- Is this a websocket client or server
+		interval = args.interval, -- Interval between ping events to the client
+		callback = args.callback,
 	}
 
 	return inst
@@ -189,8 +190,11 @@ end
 -- Set up the websocket as a client and begin listening
 local function clientInit(conn, inst)
 	inst.client = true
+	inst.interval = inst.interval or 120
+
 	local timeout = sendFrame(conn, inst, "big booty bitches")
 	if timeout then return nil end
+
 	return "READY"
 end
 
@@ -249,6 +253,7 @@ local function readFrame(conn, inst)
 	buf = buf .. conn.buffer
 	payload = _applyMask(header.mask, buf)
 
+	-- TODO: Consider how to handle binary frames (potentially do this in RES state)
 	inst._frame.payload = inst._frame.payload .. payload
 	if header.final then
 		inst._pending = false
@@ -260,7 +265,7 @@ end
 
 -- Send a pong frame to the client
 local function pingClient(conn, inst)
-	print("debug: sending ping (243)")
+	-- print("debug: sending ping (264)")
 	local timeout = sendFrame(conn, inst, nil, "PING")
 	if timeout then return nil end
 
@@ -273,21 +278,24 @@ end
 local function resolveFrame(conn, inst)
 	local opcode = inst._frame.header["opcode"]
 	if opcode == opcodes["CLOSE"] then
-		print("debug: close received (277)")
+		-- print("debug: close received (277)")
 		conn.expiration = util.time() + conn.lifetime
 		return (inst.client and "END") or "CLOSE"
 
 	elseif opcode == opcodes["PING"] then
-		print("debug: ping received (281)")
+		-- print("debug: ping received (282)")
 		local timeout = sendFrame(conn, inst, nil, "PONG")
 		if timeout then return nil end
 
 	elseif opcode == opcodes["PONG"] then
-		print("debug: pong received (276)")
+		-- print("debug: pong received (287)")
 		conn.expiration = util.time() + (inst.interval or conn.lifetime)
 		inst.pong = true
 
-	else print(inst._frame.payload)
+	else
+		local callback = inst.callback
+			-- or print
+		pcall(callback, inst._frame.payload)
 	end
 
 	inst._frame = nil

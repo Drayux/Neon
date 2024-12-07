@@ -149,6 +149,12 @@ local function initialize(conn, inst)
 				-- HTTP redirects could lead into a two-state recursion condition
 				-- when the server redirects to use HTTPS but then the upgrade
 				-- to TLS fails.
+
+				-- Yet another potential option is to first "peek" the socket
+				-- ourselves, and then pushing back up if we don't see the client
+				-- hello byte sequence, see:
+				-- https://github.com/daurnimator/lua-http/blob/ee3cf4b4992479b8ebfb39b530694af3bbd1d1eb/http/h1_connection.lua#L214
+				-- https://github.com/daurnimator/lua-http/blob/ee3cf4b4992479b8ebfb39b530694af3bbd1d1eb/http/server.lua#L26
 			end
 
 			inst.encryption = conn.socket:checktls()
@@ -552,7 +558,6 @@ local function resolve(conn, inst)
 			-- payload.headers:insert("command", inst.headers:get("command"))
 
 		elseif inst.action == "upgrade" then
-			-- NOTE: Specifically use inst.headers here
 
 		-- elseif inst.action == "file" then
 			-- TODO: Body headers
@@ -589,16 +594,21 @@ local function resolve(conn, inst)
 	if inst.action == "upgrade" then
 		-- TODO: Consider moving Upgrade: websocket since it is implied in the client
 		local wsaccept = inst.server
+			-- NOTE: Specifically use inst.headers here
 			and http.websocketAccept(inst.headers:get("sec-websocket-key"))
 			or nil
 		payload.headers:insert("sec-websocket-accept", wsaccept)
-		payload.headers:insert("connection", "Upgrade")
+		payload.headers:insert("connection", "upgrade")
 		payload.headers:insert("upgrade", "websocket")
 
 	-- Check if a body should be attached
 	-- > Websocket upgrade should not send a body
 	elseif inst.body then
+		assert(type(inst.body) == "string", "Request body parsed incorrectly...probably")
+
 		local contentType = "text/plain"
+		payload.content = inst.body
+
 		if inst.action == "command" then
 			-- Body should be a table
 			contentType = "application/json"
@@ -621,6 +631,9 @@ local function resolve(conn, inst)
 			payload.headers:insert("content-length", #payload.content)
 		end
 	end
+
+	local date = os.date("!%a, %d %b %Y %H:%M:%S GMT", time)
+	payload.headers:insert("date", date)
 	
 	-- Send the payload
 	local data = payload.status
@@ -631,7 +644,7 @@ local function resolve(conn, inst)
 		-- Append the body
 		data = data
 			.. payload.content
-			.. newline
+			-- .. newline -- TODO: Verify if/when this is needed
 	end
 
 	-- Debugging: Print the prepared payload
@@ -663,7 +676,7 @@ local function finalize(conn, inst)
 			end
 		end
 
-		conn:swap("websocket", "START")
+		conn:swap("websocket", inst.server and "S_INIT" or "C_INIT")
 		return nil -- Swap will set the new start as an interrupt state
 	end
 

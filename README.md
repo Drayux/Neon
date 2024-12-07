@@ -15,9 +15,10 @@ Avid users of Firebot may wonder what this project offers instead. Both Neon and
 - Integration with obslua
 - \> Settings UI for environment config
 - Command line interface (complete with environment arguments)
-- Server-side command processing
-- \> JSON encoding/decoding
-- \> Server commands to update the environment
+- Web server API
+- \> ~~JSON encoding/decoding~~
+- \> ~~Server command processing (POST requests)~~
+- \> Command API to define the environment (client id, etc.)
 - Application unification module (aka merging messages from different endpoints as a websocket application for server-side operation)
 - \> Connection handler (max connections/shared state for AUM)
 
