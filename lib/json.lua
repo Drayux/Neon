@@ -1,5 +1,28 @@
 -- >>> json.lua: JSON <-> Table parser/encoder
 
+---------------  UTILITY  --------------
+-- Helper function to match any whitespace and merge it into a single space character
+local function compressWhiteSpace(str)
+	if not str then return end
+	assert(type(str) == "string")
+
+	str = string.gsub(str, "[%s%c]+", " ")
+	return str
+end
+
+local escapes = {
+	["\""] = [[\"]],
+	["\\"] = [[\\]],
+	["\b"] = "\\b",
+	["\f"] = "\\f",
+	["\n"] = "\\n",
+	["\r"] = "\\r",
+	["\t"] = "\\t",
+}
+setmetatable(escapes, { __index = function(tbl, key)
+	return string.format("\\u%04x", string.byte(key))
+end })
+
 ---------------  DECODE  ---------------
 -- Token definitions for lexing
 local tokens = {
@@ -59,24 +82,23 @@ function grammar.array(data, pos)
 	end
 	pos = nextpos + 1
 
-	-- Pass an empty table through (for output) to save resouces
-	local _array = {}
-	parsed, nextpos = grammar.elements(data, pos, _array)
-	if not parsed then
-		-- Parsing fails if no element follows a comma
-		if #_array > 0 then
-			return nil, nextpos
-		end
-
-		-- Array empty - match any whitespace
-		parsed = _array
-		_, nextpos = string.find(data, tokens.whitespace, pos)
-		pos = (nextpos < pos) and pos
-			or nextpos + 1
-	else
-		pos = nextpos
+	-- Check for empty array first ( '[' ws ']' )
+	_, nextpos = string.find(data, tokens.whitespace, pos)
+	nextpos = nextpos + 1
+	_, nextpos = string.find(data, tokens.arrend, pos)
+	if nextpos then
+		return {}, nextpos + 1
 	end
 
+	-- Pass an empty table through (for output) to save resouces
+	-- TODO: Consider how to handle when the array is empty
+	local _array = {}
+	parsed, pos = grammar.elements(data, pos, _array)
+	if not parsed then
+		return nil, pos
+	end
+
+	-- Check for the end of the array
 	_, nextpos = string.find(data, tokens.arrend, pos)
 	if not nextpos then
 		return nil, pos
@@ -143,25 +165,23 @@ function grammar.object(data, pos)
 	end
 	pos = nextpos + 1
 
+	-- Check for empty object first ( '{' ws '}' )
+	_, nextpos = string.find(data, tokens.whitespace, pos)
+	nextpos = nextpos + 1
+	_, nextpos = string.find(data, tokens.objend, pos)
+	if nextpos then
+		return {}, nextpos + 1
+	end
+
 	-- Pass an empty table through (for output) to save resouces
 	-- TODO: Consider how to handle when the array is empty
 	local _obj = {}
-	parsed, nextpos = grammar.members(data, pos, _obj)
+	parsed, pos = grammar.members(data, pos, _obj)
 	if not parsed then
-		-- An error occurred if the table is not empty
-		if next(_obj) ~= nil then
-			return nil, nextpos
-		end
-
-		-- Table empty - match any whitespace
-		parsed = _obj
-		_, nextpos = string.find(data, tokens.whitespace, pos)
-		pos = (nextpos < pos) and pos
-			or nextpos + 1
-	else
-		pos = nextpos
+		return nil, pos
 	end
 
+	-- Check for the end of the object
 	_, nextpos = string.find(data, tokens.objend, pos)
 	if not nextpos then
 		return nil, pos
@@ -550,6 +570,7 @@ end
 -- Top-level parser routine
 -- > Lexes tokens and builds a lua table according to a simple grammar
 local function _decode(str)
+	print(escapes["\x06"])
 	if type(str) ~= "string" then
 		return nil, "Cannot parse non-string value as JSON"
 	end
@@ -558,17 +579,24 @@ local function _decode(str)
 	local parsed, pos = grammar.json(str, 1)
 
 	if pos > 0 then
-		local _start = pos - 1
-		local _end = pos + 11
+		local _start = (pos > 1) and pos - 1 or 1
+		local pre = compressWhiteSpace(string.sub(str, 1, _start))
+		local post = compressWhiteSpace(string.sub(str, pos + 1))
+		local char = string.sub(str, pos, pos)
 
-		_start = (_start > 0) and _start or 1
-		_end = (_end <= #str) and _end or #str
+		local preidx = #pre - 5
+		local postidx = #post
+		preidx = (preidx > 0) and preidx or 1
+		postidx = (postidx > 10) and 10 or postidx
 
 		error = "JSON parsing error near index "
 			.. tostring(pos)
-			.. " ("
-			.. string.sub(str, _start, _end)
+			.. "  -  "
+			.. string.sub(pre, preidx)
+			.. "("
+			.. char
 			.. ")"
+			.. string.sub(post, 1, postidx)
 	end
 
 	-- TODO: Before returning, run "compressWhiteSpace on error"
@@ -590,7 +618,7 @@ local function encodeValue(value)
 	elseif _type == "string" then
 		-- TODO: String data conversion
 		-- > ex. \u0065 = A
-		return "\"" .. value .. "\""
+		return "\"" .. value:gsub("[\"\\%c]", escapes) .. "\""
 	end
 
 	assert(false, "Could not encode value " .. tostring(value)
@@ -598,6 +626,7 @@ local function encodeValue(value)
 end
 
 -- Object/Array/Value disambiguation
+-- TODO: Empty arrays will be encoded as empty objects
 --- buf: Output (buffer) table
 --- tbl: Lua table/value to convert to JSON
 local encodeTable; encodeTable = function(buf, tbl, depth)
@@ -650,7 +679,6 @@ local encodeTable; encodeTable = function(buf, tbl, depth)
 end
 
 -- Top-level encoder routine
--- MAJOR TODO: Strings need to be encoded with escape sequences
 local function _encode(tbl)
 	local tbltype = type(tbl)
 	if tbltype ~= "table" then

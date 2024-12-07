@@ -19,9 +19,16 @@ local util = require("lib.util")
 -- field, content = headers.split("Accept: */*")
 -- print(tostring(field), tostring(content))
 
--- local json = require("lib.util.json")
+-- local json = require("lib.json")
 -- json.test()
 -- local data = [[{"hello": "world"}]]
+-- local data = [[{
+--   "toes": true,
+--   "booger": [
+--     "app\nle\ns",
+--     "carrots",
+--     "vegan lea\u0006ther"]
+-- }]]
 -- local parsed, err = json.decode(data)
 -- if err then
 -- 	print(err)
