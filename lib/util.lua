@@ -1,4 +1,4 @@
--- >>> util.lua: Shared utility functions
+-- >>> util.lua: Stateless, generic utility functions
 
 -- >> UTILITY MODULE <<
 local module = {

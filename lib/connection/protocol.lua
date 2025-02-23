@@ -3,7 +3,7 @@
 local function load(name)
 	local status, ret = pcall(require, "protocols." .. name)
 
-	if type(ret) == "string" then
+	if type(ret) ~= "table" then
 		print(ret)
 		return nil
 	end

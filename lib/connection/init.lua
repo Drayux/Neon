@@ -1,8 +1,9 @@
 -- >>> connection.lua: Server/client connection handler type
 
 local cqcore = require("cqueues")
-local cqcond = require("cqueues.condition")
 local cqsock = require("cqueues.socket")
+local cqprom = require("cqueues.promise")
+local cqcond = require("cqueues.condition")
 local cqerno = require("cqueues.errno")
 
 local protocol = require("lib.connection.protocol")
@@ -29,6 +30,7 @@ local function _new(s, c, t)
 		-- Coroutine management
 		controller = c,
 		trigger = cqcond.new(),
+		promise = cqprom.new(), -- To retrieve data from single-shot API calls
 		lifetime = t or 0,		-- Duration of a timeout event
 		expiration = exp,		-- Absolute timeout time (used in handler)
 
@@ -211,6 +213,60 @@ function api:data(...)
 	local status, ret = pcall(routine, self, self.instance, ...)
 
 	return ret
+end
+
+-- Retrieve connection data via waiting for a promise
+--- callback: Callback function to be ran on promise fulfillment instead of blocking
+--- returns: Promise data or nil if connection close (or promise fails)
+function api:wait(callback)
+	assert(not callback or type(callback) == "function")
+	if cqprom.type(self.promise) ~= "promise" then
+		-- Nothing to wait for (no current use for this, just a safety check)
+		return
+	end
+
+	local data = nil
+	if self.promise:status() == "fulfilled"
+		or not self.socket
+	then
+		-- Data is already ready
+		data = self.promise:get()
+		if callback then
+			callback(data)
+		end
+		return data -- TODO: Consider returing nil here instead
+	end
+
+	-- Construct the promise handler function
+	-- > Called immediately if a callback was not given (blocking flow)
+	local cond = self.promise:pollfd()
+	local handler = function(conn)
+		while not data do
+			local closing = conn.trigger:wait(cond)
+			if not conn.socket then
+				-- Connection closed, promise will never be fulfilled
+				-- TODO: We may want to return nil here instead of running the callback
+				break
+			end
+
+			-- TODO: Consider handling rejected promises
+			if conn.promise:status() == "fulfilled" then
+				data = conn.promise:get()
+			end
+		end
+
+		if callback then
+			callback(data)
+		end
+		return data
+	end
+	
+	-- Final logic routing
+	if callback then
+		self.controller:wrap(handler, self)
+	else
+		return handler(self)
+	end
 end
 
 -- Check for connection timeout

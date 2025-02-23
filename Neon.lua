@@ -1,44 +1,8 @@
 local cqcore = require("cqueues")
-local cqcond = require("cqueues.condition")
-local cqsock = require("cqueues.socket")
 local cqsgnl = require("cqueues.signal")
 
-local connection = require("lib.connection") -- TODO: Move inside of the server module (once created)
-local util = require("lib.util")
-
-
--- Some "unit tests" for http headers
--- local headers = require("lib.http.headers")
--- local _h = headers.new()
--- _h:insert("keep-alive", "application/soap+xml; charset=utf-8; action=\"urn:CreateCredential\"")
--- _h:insert("sec-websocket-key", "dGhlIHNhbXBsZSBub2o5jZQ==")
--- local ret = _h:insert("upgrade", "a_protocol/1, example, another_protocol/2.2")
--- print("items in list: " .. #ret)
--- print(_h:dump()) 
--- local field, content
--- field, content = headers.split("Accept: */*")
--- print(tostring(field), tostring(content))
-
--- local json = require("lib.json")
--- json.test()
--- local data = [[{"hello": "world"}]]
--- local data = [[{
---   "toes": true,
---   "booger": [
---     "app\nle\ns",
---     "carrots",
---     "vegan lea\u0006ther"]
--- }]]
--- local parsed, err = json.decode(data)
--- if err then
--- 	print(err)
--- end
--- if parsed then
--- 	print(json.encode(parsed))
--- end
-
--- repeat return until true
-
+local server = require("lib.server")
+local client = require("lib.client")
 
 -- Blocks and handles CTRL-C interrupt signal (for graceful shutdown)
 local _catchSIGINT = function(callback, ...)
@@ -56,130 +20,28 @@ local _catchSIGINT = function(callback, ...)
 	end
 end
 
-local controller = cqcore.new()
-local server = {
-	socket = cqsock.listen("127.0.0.1", 1085),
-	trigger = cqcond.new(),
-	running = false,
-	connections = {}, -- Only those where the host operates as a server
-
-	-- These will become script arguments (TODO: port and various integrations)
-	timeout = 10,
-	rootdir = util.getcwd() .. "/overlay",
-	logging = true, -- false
-
-	--
-	seed = util.seed, -- Function to seed the RNG
-	-- seed = function() return 69420 end,
-}
-
--- Run an integration module as a client (TODO)
--- (aka a websocket client to twitch's API....usually)
-function server:module(mod)
-	-- assert(false, "TODO: server:module - modules should have a consistent format"
-	-- 	.. " such that regardless of being a one-shot or loop, the parent server"
-	-- 	.. " can retrieve the necessary data. (Likely to be a function callback.)")
-
-	-- local _host = "httpbin.org"
-	-- local _port = 80
-	local _host = "127.0.0.1"
-	local _port = 1085 -- 443
-	local sock = cqsock.connect(_host, _port)
-
-	local conn = connection.new(sock, controller, self.timeout)
-	table.insert(self.connections, conn)
-	conn.num = self.logging and #self.connections or nil
-
-	local args = {
-		http = {
-			method = "GET",
-			endpoint = "/headers",
-			host = _host,
-			encryption = {},
-			headers = {
-				connection = "Upgrade",
-				upgrade = "websocket",
-
-				-- TODO: (Important) Generate a random websocket accept key with the http headers utility
-			},
-		},
-		websocket = {
-			callback = function(data)
-					print("data:", data)
-				end,
-		},
-	}
-
-	conn:run("http", args, self.trigger)
-	cqcore.poll()
-end
-
-function server:loop()
-	-- Init the RNG
-	if server.seed then server.seed() end
-
-	self.running = true
-	while self.running do
-
-		-- TODO: If max connections, wait for one to close (go to next loop)
-
-		local sock = self.socket:accept(0)
-		if sock == nil then
-			if self.logging then print("~ Nothing to accept ~\n") end
-			cqcore.poll(self.socket, self.trigger)
-		
-		else
-			local conn = connection.new(sock, controller, self.timeout)
-
-			-- TODO: Add connection limit and remove completed instances
-			table.insert(self.connections, conn)
-			conn.num = self.logging and #self.connections or nil
-
-			-- Args specify functionality for 'guest -> host' data
-			local args = {
-				http = {
-					path = self.rootdir,
-					-- commands = nil,
-					commands = {
-						["cock"] = function(params, output)
-								output["message"] = "nice"
-								-- return nil
-							end,
-						["balls"] = function(params, output)
-								return "cannot scratch balls sufficiently, try pinch and twist"
-							end,
-					},
-				},
-				websocket = {
-					interval = 120, -- Two minutes
-				},
-			}
-
-			conn:run("http", args, self.trigger)
-			cqcore.poll() -- Init the connection before accepting another
-		end
-	end -- [while self.running]
-end
-
-function server:stop()
-	if not self.running then return end
-	for idx, conn in ipairs(self.connections) do
-		-- if conn.status == "WEBSOCKET" then conn:data("closing!") end
-		conn:close(self.timeout)
-	end
-
-	self.running = false
-	self.trigger:signal()
-end
-
--- TODO: Actual arg parsing
+-- TODO: *Actual* arg parsing
 local clientMode = (arg[1] == "client")
+local controller = cqcore.new()
 if clientMode then
-	controller:wrap(server.module, server, nil)
-	server.running = true
+	local cargs = nil -- serverObj
+	local clientObj = client.new(controller, cargs)
+
+	clientObj:load("localhost")
+	-- TODO: This will need to become the client handler logic
+	controller:wrap(clientObj.app, clientObj, "test")
+
+	-- controller:wrap(clientObj.app, server, nil)
 else 
-	controller:wrap(server.loop, server)
-	controller:wrap(_catchSIGINT, server.stop, server)
+	local sargs = {
+		timeout = 10,
+		directory = "overlay",
+		logging = true,
+	}
+	local serverObj = server.new(controller, sargs)
+	
+	controller:wrap(serverObj.loop, serverObj)
+	controller:wrap(_catchSIGINT, serverObj.stop, serverObj)
 end
 
 assert(controller:loop())

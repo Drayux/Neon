@@ -21,7 +21,7 @@ local function _newInstance(args)
 		_pending = false,
 		_frame = nil,
 
-		pong = true,				-- Server has sent an unresolved ping (true if resolved/false if pending)
+		pong = true, -- Server has sent an unresolved ping (true if resolved/false if pending)
 		client = false, -- Is this a websocket client or server
 		interval = args.interval, -- Interval between ping events to the client
 		callback = args.callback,

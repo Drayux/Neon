@@ -7,7 +7,8 @@ local util = require("lib.util")
 
 -- >> STATE OBJECT <<
 local function _newInstance(args)
-	if not args then args = {} end
+	if args == nil then args = {} end
+	assert(type(args) == "table")
 
 	-- Clients will start with their request populated
 	-- TODO: Consider using args.host as the client condition instead
@@ -345,6 +346,7 @@ local function command(conn, inst)
 
 		-- Verify the requested endpoint
 		-- > Request must be alphabet characters (i.e. no number, no symbols)
+		-- TODO: Highly consider creating unique namespaces, divided with a . in the endpoint
 		local command = inst.endpoint:match("^/(%a+)/?$")
 		if not command then
 			inst.status = 400
@@ -604,8 +606,6 @@ local function resolve(conn, inst)
 	-- Check if a body should be attached
 	-- > Websocket upgrade should not send a body
 	elseif inst.body then
-		assert(type(inst.body) == "string", "Request body parsed incorrectly...probably")
-
 		local contentType = "text/plain"
 		payload.content = inst.body
 
@@ -616,9 +616,12 @@ local function resolve(conn, inst)
 
 		elseif inst.action == "file" then
 			-- TODO: This may need to be something else for a client
-			-- > OR....if we're sending javascript files
+			-- > OR....if the server is sending javascript files
 			contentType = "text/html"
 		end
+
+		-- Verify that the body is ready to go
+		assert(type(payload.content) == "string", "Attempt to send non-string payload")
 
 		-- Insert content type header
 		if not payload.headers:search("content-type") then
@@ -659,6 +662,22 @@ local function resolve(conn, inst)
 end
 
 local function finalize(conn, inst)
+	-- Fulfill the connection promise
+	-- TODO: For server-side websocket upgrades, the server should set the promise
+	--- data to be the "websocket send" closure, else set nothing
+	if not inst.server then
+		-- TODO: Consider how to handle keep-alive connections
+		--- Should the promise data be set as an array? Should we use an array of promises?
+		--- Should we wipe the promise and create a new promise on the assumption that
+		--- the connection would be continued only after pulling the data from the original
+		--- promise?
+		conn.promise:set(true, {
+			status = inst.status,
+			headers = inst.headers,
+			body = inst.body
+		})
+	end
+
 	-- Websocket upgrade
 	if inst.action == "upgrade" then
 		if not inst.server then
@@ -685,7 +704,7 @@ local function finalize(conn, inst)
 	-- TODO: Check 'keep-alive' header for requested expiration time
 	inst.persistent = inst.persistent
 		or inst.headers:search("Connection", "keep-alive")
-	if inst.persistent and conn.expiration then
+	if (inst.status < 300) and inst.persistent and conn.expiration then
 		conn.expiration = util.time() + conn.lifetime
 		return "INIT"
 	end
