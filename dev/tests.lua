@@ -30,3 +30,8 @@
 
 -- repeat return until true
 
+require("dev/static-data")
+require("dev/static-data2")
+local _data = require("lib/static")
+print(_data["a"])
+print(_data["b"])

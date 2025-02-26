@@ -19,14 +19,14 @@ local module = {
 			args = { -- Array of parameter/header specificiations
 				number_of_toes = {
 					type = "number",
-					notnil = false,
+					optional = false, -- Can the value be nil
 					default = 7,
 					stateful = false, -- Should the value be pulled from the module state
 					header = false, -- Should the value be included as a header (or a param)
 				},
 				clipped_toe_nails = {
 					type = "bool",
-					notnil = true,
+					optional = true,
 					default = false,
 					stateful = false,
 					header = false,
