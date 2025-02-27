@@ -1,6 +1,9 @@
-local cqcore = require("cqueues")
+-- >>> Neon.lua - Main file for the Neon Multiplexing Alerts Server
+
+-- local cqcore = require("cqueues")
 local cqsgnl = require("cqueues.signal")
 
+local refs = require("lib.refs")
 local server = require("lib.server")
 local client = require("lib.client")
 
@@ -22,7 +25,7 @@ end
 
 -- TODO: *Actual* arg parsing
 local clientMode = (arg[1] == "client")
-local controller = cqcore.new()
+local controller = refs.controller
 if clientMode then
 	local cargs = nil -- serverObj
 	local clientObj = client.new(controller, cargs)

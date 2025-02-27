@@ -30,8 +30,14 @@
 
 -- repeat return until true
 
-require("dev/static-data")
-require("dev/static-data2")
-local _data = require("lib/static")
-print(_data["a"])
-print(_data["b"])
+local refs = require("lib/refs")
+print(refs.controller)
+print(refs.server)
+-- print(refs.apples)
+-- refs.server = 5
+print(refs.controller)
+print(refs.controller)
+local refs2 = require("lib/refs")
+print(refs2.controller)
+print(refs2.controller)
+print(refs.controller)
