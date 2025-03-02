@@ -2,11 +2,26 @@
 
 local cqcore = require("cqueues")
 
-local module = nil -- Singleton module
+-- Initialize a new args table (settings object)
+local _argtable = function()
+	-- 
+	_ = {
 
+	}
+	
+	args = {
+		server = {},
+		client = {},
+	}
+	return args
+end
+
+local module = nil -- Singleton module
 local _init = function()
 	-- Init should never be called more than once
 	assert(module == nil, "Singleton _init() called more than once")
+
+	-- TODO: Consider whether the members should be initialized all at once instead
 
 	-- Create a proxy table to track accesses
 	-- > Allows the module to be "read-only/self-initializing"
@@ -23,8 +38,7 @@ local _init = function()
 				local create = nil
 				if key == "settings" then
 					index = "_SETTINGS"
-					create = function() return {} end -- Do I really need a closure for this?
-					-- Should I just be initializing these at the creation of _data instead?
+					create = _argtable
 
 				elseif key == "controller" then
 					index = "_CONTROLLER"
@@ -32,8 +46,7 @@ local _init = function()
 
 				elseif key == "server" then
 					index = "_SERVEROBJ"
-					-- object = <new server object - closure, accepts arguments>
-					create = nil
+
 
 				elseif key == "client" then
 					index = "_CLIENTOBJ"

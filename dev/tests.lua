@@ -30,14 +30,13 @@
 
 -- repeat return until true
 
-local refs = require("lib/refs")
-print(refs.controller)
+local refs = require("lib.refs")
 print(refs.server)
--- print(refs.apples)
--- refs.server = 5
-print(refs.controller)
-print(refs.controller)
-local refs2 = require("lib/refs")
-print(refs2.controller)
-print(refs2.controller)
-print(refs.controller)
+-- refs.server = refs.server + 4
+
+local refs2 = require("lib.refs")
+print(refs.server)
+print(refs2.server)
+-- refs2.server = 18
+print(refs2.server)
+print(refs.server)
