@@ -21,7 +21,7 @@ local module = {
 					type = "number",
 					optional = false, -- Can the value be nil
 					default = 7,
-					stateful = false, -- Should the value be pulled from the module state
+					stateful = false, -- Should the value be pulled from the module state table
 					header = false, -- Should the value be included as a header (or a param)
 				},
 				clipped_toe_nails = {

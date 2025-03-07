@@ -31,12 +31,18 @@
 -- repeat return until true
 
 local refs = require("lib.refs")
-print(refs.server)
+-- print(refs.server)
 -- refs.server = refs.server + 4
 
-local refs2 = require("lib.refs")
-print(refs.server)
-print(refs2.server)
--- refs2.server = 18
-print(refs2.server)
-print(refs.server)
+-- argtable is a global for testing
+local tables = _initopts() 
+
+local args = tables._proxy
+local server = args.server
+
+server.timeout = 32
+server.directory = "mistletoe"
+
+for k, v in pairs(tables._intserver._data) do
+	print(k, v._data, v._changed)
+end

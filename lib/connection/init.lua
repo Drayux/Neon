@@ -41,7 +41,7 @@ local function _new(s, c, t)
 		instance = nil,			-- State storage (connection instance)
 	}
 
-	setmetatable(obj, {__index = api})
+	setmetatable(obj, { __index = api })
 	return obj
 end
 
@@ -179,6 +179,18 @@ function api:run(machine, args, notify)
 			-- Step to the next state transition
 			local state = func(self, self.instance)
 			self.state = self.interrupt or state
+
+			-- NOTE: The following *looks* like a bug (and could probably stand to be revised)
+			-- > The potential for problems is that the following poll may yield to
+			-- > a timeout routine, where an interrupt would be set. Though this case
+			-- > is rare, the following "resolution" would wipeout said interrupt state.
+			-- > However, recall that the timeout routine is a "soft" close request,
+			-- > so, if had reached that state, that implies that the connection is
+			-- > not waiting on any external resources and therefore operating as normal
+			-- > (aka likely actively opening or closing.)
+			-- > This does have the occasional side effect of a timeout routine possibly
+			-- > running twice (see websocket timeout handler) but improvement would
+			-- > likely complicate this loop substantially without a major refactor.
 
 			cqcore.poll()
 			self.interrupt = nil -- Resolve interrupts

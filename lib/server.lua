@@ -27,6 +27,7 @@ local function _new(ctrl, args)
 
 	assert(type(args) == "table")
 	assert(cqcore.type(ctrl) == "controller")
+	assert((args.timeout == nil) or (args.timeout >= 0))
 	
 	local sock = cqsock.listen("127.0.0.1", args.port or 1085)
 	local trig = cqcond.new()
@@ -49,7 +50,7 @@ local function _new(ctrl, args)
 		connections = {}, -- Only those where the host operates as a server
 	}
 
-	setmetatable(obj, {__index = methods})
+	setmetatable(obj, { __index = methods })
 	return obj
 end
 
