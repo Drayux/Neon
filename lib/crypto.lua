@@ -224,4 +224,3 @@ function module.encode(bytearr)
 end
 
 return module
-

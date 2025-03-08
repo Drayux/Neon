@@ -31,11 +31,13 @@
 -- repeat return until true
 
 local refs = require("lib.refs")
--- print(refs.server)
--- refs.server = refs.server + 4
 
--- argtable is a global for testing
-local tables = _initopts() 
+for k, v in pairs(refs) do
+	print(k, v)
+end
+
+print(refs.server)
+refs.server = 4
 
 local args = tables._proxy
 local server = args.server

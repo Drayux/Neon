@@ -1,21 +1,22 @@
 -- >>> Neon.lua - Main file for the Neon Multiplexing Alerts Server
 
 -- local cqcore = require("cqueues")
-local cqsgnl = require("cqueues.signal")
+local signal = require("cqueues.signal")
 
+local options = require("lib.options")
 local refs = require("lib.refs")
-local server = require("lib.server")
-local client = require("lib.client")
+-- local server = require("lib.server")
+-- local client = require("lib.client")
 
 -- Blocks and handles CTRL-C interrupt signal (for graceful shutdown)
 local _catchSIGINT = function(callback, ...)
 	-- TODO: If parameter, then use the signal handler else stop immediately
 	-- ....maybe? standalone vs OBS shutdown sequences look quite different
-	cqsgnl.block(cqsgnl.SIGINT)
+	signal.block(signal.SIGINT)
 
-	local signal = cqsgnl.listen(cqsgnl.SIGINT)
-	signal:wait()
-	cqsgnl.unblock(cqsgnl.SIGINT)
+	local listener = signal.listen(signal.SIGINT)
+	listener:wait()
+	signal.unblock(signal.SIGINT)
 	
 	print("\nBegin manual server shutdown")
 	if type(callback) == "function" then
@@ -23,7 +24,7 @@ local _catchSIGINT = function(callback, ...)
 	end
 end
 
--- TODO: *Actual* arg parsing
+-- TODO: *Actual* arg parsing (implement this in lib/options)
 local clientMode = (arg[1] == "client")
 local controller = refs.controller
 if clientMode then
